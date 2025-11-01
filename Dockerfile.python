@@ -1,0 +1,44 @@
+# Python Bot Dockerfile - Updated for Groq/AssemblyAI/Inworld
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies required for audio processing and ML libraries
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    ffmpeg \
+    portaudio19-dev \
+    python3-dev \
+    libgomp1 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY voice-assistant-project/requirements.txt .
+
+# Install Python dependencies with specific order for compatibility
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    pipecat-ai==0.0.85 \
+    assemblyai==0.44.3 \
+    groq==0.9.0 \
+    python-dotenv \
+    loguru \
+    aiohttp \
+    onnxruntime \
+    transformers \
+    torch --index-url https://download.pytorch.org/whl/cpu
+
+# Copy application code
+COPY voice-assistant-project/voice_assistant.py .
+COPY voice-assistant-project/.env .env
+
+# Create a non-root user for security
+RUN useradd -m -u 1000 botuser && \
+    chown -R botuser:botuser /app
+
+USER botuser
+# Default command (used when run standalone)
+CMD ["python", "voice_assistant.py"]

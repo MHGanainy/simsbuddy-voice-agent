@@ -1,0 +1,16 @@
+.git
+.gitignore
+*.md
+docs/
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+venv/
+node_modules/
+.env.local
+*.log
+coverage/
+Dockerfile*
+docker-compose*.yml
+.dockerignore

@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # Redis - Message broker and state store
+  redis:
+    image: redis:7-alpine
+    container_name: voice-agent-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - voice-agent-network
+
+  # Orchestrator - Runs Express API + Celery worker via Supervisor
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: voice-agent-orchestrator
+    ports:
+      - "8080:8080"
+    environment:
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+
+      # LiveKit credentials
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+
+      # AI Service API Keys
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
+      INWORLD_API_KEY: ${INWORLD_API_KEY}
+
+      # Orchestrator config
+      MAX_BOTS: 50
+      PORT: 8080
+      SESSION_TIMEOUT: 1800000
+      BOT_STARTUP_TIMEOUT: 30
+
+      # Pre-warm pool config
+      PREWARM_POOL_SIZE: 3
+
+      # Python script path
+      PYTHON_SCRIPT_PATH: /app/voice-assistant-project/voice_assistant.py
+
+      # Node environment
+      NODE_ENV: production
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount for development (comment out for production)
+      - ./voice-assistant-project:/app/voice-assistant-project
+    networks:
+      - voice-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend - React application
+  frontend:
+    build:
+      context: ./voice-assistant-project/livekit-react-app
+      dockerfile: Dockerfile
+    container_name: voice-agent-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8080
+    depends_on:
+      - orchestrator
+    networks:
+      - voice-agent-network
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  voice-agent-network:
+    driver: bridge

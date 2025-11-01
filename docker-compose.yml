@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # Core Service 1: Orchestrator (Required)
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: bot-orchestrator
+    ports:
+      - "8080:8080"
+    environment:
+      # LiveKit Cloud - Set in .env file or pass as environment variables
+      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      # AI Services - Set in .env file or pass as environment variables
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ASSEMBLY_API_KEY=${ASSEMBLY_API_KEY}
+      - INWORLD_API_KEY=${INWORLD_API_KEY}
+      # Configuration
+      - MAX_BOTS=5
+      - SESSION_TIMEOUT=1800000
+      - PORT=8080
+    volumes:
+      - ./voice-assistant-project/voice_assistant.py:/app/bot/voice_assistant.py:ro
+      - ./voice-assistant-project/.env:/app/bot/.env:ro
+    networks:
+      - voice-assistant-network
+    restart: unless-stopped
+
+  # Core Service 2: Frontend (Required)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: voice-assistant-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_LIVEKIT_URL=${LIVEKIT_URL}
+      - VITE_TOKEN_ENDPOINT=http://localhost:8080/api/token
+    depends_on:
+      - orchestrator
+    networks:
+      - voice-assistant-network
+    restart: unless-stopped
+
+networks:
+  voice-assistant-network:
+    driver: bridge

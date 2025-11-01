@@ -1,0 +1,42 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies: Node.js, ffmpeg, and supervisor
+RUN apt-get update && \
+    apt-get install -y curl supervisor && \
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy application code
+COPY voice-assistant-project/ /app/voice-assistant-project/
+
+# Install Node.js dependencies
+WORKDIR /app/voice-assistant-project/orchestrator
+RUN npm ci --only=production
+
+# Install Python dependencies (including Celery and Redis)
+WORKDIR /app/voice-assistant-project
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy supervisor configuration
+COPY voice-assistant-project/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create log directory
+RUN mkdir -p /var/log/supervisor
+
+# Set working directory back to orchestrator
+WORKDIR /app/voice-assistant-project/orchestrator
+
+# Expose Express API port
+EXPOSE 8080
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    C_FORCE_ROOT=true \
+    PYTHON_SCRIPT_PATH=/app/voice-assistant-project/voice_assistant.py
+
+# Start supervisor (runs Express + Celery worker)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
