@@ -3,7 +3,7 @@
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "docker/Dockerfile.backend"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "/usr/bin/supervisord -c /app/supervisord.conf"
