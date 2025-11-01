@@ -1,0 +1,23 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "environments": {
+    "staging": {
+      "services": {
+        "orchestrator": {
+          "rootDirectory": "/backend",
+          "build": {
+            "builder": "DOCKERFILE",
+            "dockerfilePath": "Dockerfile"
+          }
+        },
+        "frontend": {
+          "rootDirectory": "/frontend",
+          "build": {
+            "builder": "DOCKERFILE",
+            "dockerfilePath": "Dockerfile"
+          }
+        }
+      }
+    }
+  }
+}
