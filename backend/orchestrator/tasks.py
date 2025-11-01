@@ -33,6 +33,7 @@ redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 # Configuration
 PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_assistant.py')
 BOT_STARTUP_TIMEOUT = int(os.getenv('BOT_STARTUP_TIMEOUT', 30))  # Increased for ML model loading
+SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT', 14400))  # 4 hours for medical conversations
 PREWARM_POOL_SIZE = int(os.getenv('PREWARM_POOL_SIZE', 3))
 MAX_LOG_ENTRIES = 100
 AGENT_LOG_DIR = os.getenv('AGENT_LOG_DIR', '/var/log/voice-agents')
@@ -156,7 +157,7 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
             log_file_path = os.path.join(AGENT_LOG_DIR, f'{session_id}.log')
 
             # Spawn Python process
-            # Use start_new_session to detach from parent and prevent zombies
+            # Use os.setsid to create new process group for proper cleanup
             # Redirect stderr to stdout so we can read all logs from one stream
             process = subprocess.Popen(
                 cmd,
@@ -165,18 +166,47 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                 text=True,
                 bufsize=1,
                 env=os.environ.copy(),
-                start_new_session=True  # Detach from parent process group
+                preexec_fn=os.setsid  # Create new process group
             )
 
             pid = process.pid
 
-            # Store PID and log file path in Redis for cleanup and access
-            redis_client.set(f'agent:{session_id}:pid', pid, ex=7200)  # 2 hour TTL
-            redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=7200)
-            redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
-            redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
+            # Get process group ID for verification and tracking
+            try:
+                pgid = os.getpgid(pid)
+                is_group_leader = (pgid == pid)
 
-            logger.info("agent_process_spawned", pid=pid, voice_id=voice_id, log_file=log_file_path)
+                # Store PID, PGID, and log file path in Redis for cleanup and access
+                redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)  # 4 hour TTL
+                redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=14400)  # 4 hour TTL
+                redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+                redis_client.hset(f'session:{session_id}', 'agentPgid', str(pgid))
+                redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
+
+                logger.info("agent_process_spawned",
+                           pid=pid,
+                           pgid=pgid,
+                           is_group_leader=is_group_leader,
+                           voice_id=voice_id,
+                           log_file=log_file_path)
+
+                # Verify that the process is a group leader (expected with os.setsid)
+                if not is_group_leader:
+                    logger.warning("agent_not_group_leader",
+                                  pid=pid,
+                                  pgid=pgid,
+                                  warning="Process may not be properly isolated for cleanup")
+
+            except (ProcessLookupError, OSError) as e:
+                logger.error("agent_pgid_lookup_failed",
+                           pid=pid,
+                           error=str(e),
+                           warning="Process group tracking unavailable")
+                # Still store PID even if PGID lookup fails
+                redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)
+                redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=14400)
+                redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+                redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
 
             # Start background thread for continuous log reading
             # This prevents the pipe from filling up and blocking the agent
@@ -244,10 +274,10 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
 
             if not connected:
                 logger.error("agent_connection_timeout", timeout_seconds=BOT_STARTUP_TIMEOUT)
-                process.terminate()
+                os.killpg(process.pid, signal.SIGTERM)  # Kill entire process group
                 time.sleep(2)
                 if process.poll() is None:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)  # Force kill process group
                 raise Exception(f"Agent failed to connect within {BOT_STARTUP_TIMEOUT}s")
 
             # Update session to ready
@@ -418,7 +448,7 @@ def cleanup_stale_agents():
     """
     try:
         now = int(time.time())
-        timeout = int(os.getenv('SESSION_TIMEOUT', 1800))  # Default 30 minutes
+        timeout = int(os.getenv('SESSION_TIMEOUT', 14400))  # Default 4 hours
         cleaned_count = 0
 
         session_keys = redis_client.keys('session:*')
@@ -450,15 +480,15 @@ def cleanup_stale_agents():
                            session_id=session_id,
                            inactive_seconds=now - last_active)
 
-                # Stop agent process
+                # Stop agent process and all children
                 pid = session_data.get('agentPid')
                 if pid:
                     try:
-                        os.kill(int(pid), signal.SIGTERM)
+                        os.killpg(int(pid), signal.SIGTERM)  # Kill entire process group
                         time.sleep(2)
                         # Force kill if still alive
                         try:
-                            os.kill(int(pid), signal.SIGKILL)
+                            os.killpg(int(pid), signal.SIGKILL)  # Force kill process group
                         except (ProcessLookupError, OSError):
                             pass
                     except (ProcessLookupError, OSError):
