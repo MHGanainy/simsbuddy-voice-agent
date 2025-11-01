@@ -1,22 +1,19 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import dotenv from 'dotenv'
+
+// Load environment variables
+dotenv.config()
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
-  // Load env file based on `mode` in the current working directory.
-  // Set the third parameter to '' to load all env regardless of the `VITE_` prefix.
-  const env = loadEnv(mode, process.cwd(), '')
-  
-  return {
-    plugins: [react()],
-    server: {
-      port: parseInt(env.PORT || '3000'),
-      open: true
-    },
-    // Optionally expose some non-VITE variables to your app
-    define: {
-      // Only expose variables that start with VITE_ or specific ones you need
-      'process.env.NODE_ENV': JSON.stringify(mode)
-    }
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+    host: true,
+    strictPort: true,
+  },
+  define: {
+    'process.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL || 'http://localhost:8000')
   }
 })

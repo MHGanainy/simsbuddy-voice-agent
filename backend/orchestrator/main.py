@@ -26,6 +26,12 @@ import redis
 from celery import Celery
 from backend.orchestrator.tasks import spawn_voice_agent
 
+# Import structured logging
+from backend.common.logging_config import setup_logging, LogContext
+
+# Setup logging
+logger = setup_logging(service_name='orchestrator')
+
 # Environment variables
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
@@ -39,9 +45,9 @@ if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
 try:
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.ping()
-    print(f"[Redis] Connected to {REDIS_URL}")
+    logger.info("redis_connected", redis_url=REDIS_URL)
 except Exception as e:
-    print(f"[Redis] ERROR: Failed to connect to Redis: {e}")
+    logger.error("redis_connection_failed", redis_url=REDIS_URL, error=str(e), exc_info=True)
     raise
 
 # Celery app (for task revocation)
@@ -131,7 +137,7 @@ def generate_livekit_token(session_id: str, user_name: str) -> str:
 
         return token.to_jwt()
     except Exception as e:
-        print(f"[Error] LiveKit token generation failed: {e}")
+        logger.error("livekit_token_generation_failed", error=str(e), exc_info=True)
         raise
 
 def verify_livekit_webhook(payload: bytes, signature: str) -> bool:
@@ -155,7 +161,7 @@ def verify_livekit_webhook(payload: bytes, signature: str) -> bool:
 
         return hmac.compare_digest(signature, expected_signature)
     except Exception as e:
-        print(f"[Webhook] Signature verification error: {e}")
+        logger.error("webhook_signature_verification_error", error=str(e), exc_info=True)
         return False
 
 async def cleanup_session(session_id: str) -> Dict[str, Any]:
@@ -188,11 +194,11 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         session_data = redis_client.hgetall(session_key)
 
         if not session_data:
-            print(f"[Cleanup] No session data found for {session_id}")
+            logger.warning("cleanup_no_session_found", session_id=session_id)
             cleanup_details["errors"].append("Session not found")
             return cleanup_details
 
-        print(f"[Cleanup] Cleaning up session {session_id}: {session_data}")
+        logger.info("cleanup_started", session_id=session_id, session_data=session_data)
 
         # 1. Revoke Celery task if exists
         task_id = session_data.get('celeryTaskId') or session_data.get('taskId')
@@ -200,11 +206,11 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             try:
                 celery_app.control.revoke(task_id, terminate=True)
                 cleanup_details["celery_task_revoked"] = True
-                print(f"[Cleanup] Revoked Celery task: {task_id}")
+                logger.info("cleanup_celery_task_revoked", session_id=session_id, task_id=task_id)
             except Exception as e:
                 error_msg = f"Failed to revoke task {task_id}: {e}"
                 cleanup_details["errors"].append(error_msg)
-                print(f"[Cleanup] {error_msg}")
+                logger.error("cleanup_celery_revoke_failed", session_id=session_id, task_id=task_id, error=str(e), exc_info=True)
 
         # 2. Kill voice agent process
         pid_str = session_data.get('agentPid')
@@ -215,7 +221,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         if pid_str:
             try:
                 pid = int(pid_str)
-                print(f"[Cleanup] Killing process {pid} (SIGTERM)")
+                logger.info("cleanup_killing_process", session_id=session_id, pid=pid, signal="SIGTERM")
 
                 # Send SIGTERM first
                 try:
@@ -228,19 +234,19 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                     # Check if still alive, send SIGKILL
                     try:
                         os.kill(pid, 0)  # Just check if exists
-                        print(f"[Cleanup] Process {pid} still alive, sending SIGKILL")
+                        logger.warning("cleanup_process_still_alive", session_id=session_id, pid=pid, signal="SIGKILL")
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
-                        print(f"[Cleanup] Process {pid} terminated gracefully")
+                        logger.info("cleanup_process_terminated_gracefully", session_id=session_id, pid=pid)
 
                 except ProcessLookupError:
-                    print(f"[Cleanup] Process {pid} already dead")
+                    logger.info("cleanup_process_already_dead", session_id=session_id, pid=pid)
                     cleanup_details["process_killed"] = True
 
             except Exception as e:
                 error_msg = f"Failed to kill process {pid_str}: {e}"
                 cleanup_details["errors"].append(error_msg)
-                print(f"[Cleanup] {error_msg}")
+                logger.error("cleanup_kill_process_failed", session_id=session_id, pid=pid_str, error=str(e), exc_info=True)
 
         # 3. Clean up Redis keys
         try:
@@ -266,20 +272,20 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             redis_client.srem('pool:ready', session_id)
 
             cleanup_details["redis_cleaned"] = True
-            print(f"[Cleanup] Cleaned up Redis keys for {session_id}")
+            logger.info("cleanup_redis_cleaned", session_id=session_id, keys_deleted=len(keys_to_delete))
 
         except Exception as e:
             error_msg = f"Failed to clean Redis: {e}"
             cleanup_details["errors"].append(error_msg)
-            print(f"[Cleanup] {error_msg}")
+            logger.error("cleanup_redis_failed", session_id=session_id, error=str(e), exc_info=True)
 
-        print(f"[Cleanup] Session {session_id} cleanup complete")
+        logger.info("cleanup_complete", session_id=session_id, details=cleanup_details)
         return cleanup_details
 
     except Exception as e:
         error_msg = f"Cleanup failed: {e}"
         cleanup_details["errors"].append(error_msg)
-        print(f"[Cleanup] ERROR: {error_msg}")
+        logger.error("cleanup_failed", session_id=session_id, error=str(e), exc_info=True)
         return cleanup_details
 
 # API Endpoints
@@ -294,7 +300,7 @@ async def root():
         "features": ["session_tracking", "cleanup", "livekit_webhooks"]
     }
 
-@app.post("/api/session/start", response_model=SessionStartResponse)
+@app.post("/orchestrator/session/start", response_model=SessionStartResponse)
 async def start_session(request: SessionStartRequest):
     """
     Start a voice assistant session
@@ -321,15 +327,21 @@ async def start_session(request: SessionStartRequest):
         # Generate session ID
         session_id = generate_session_id()
 
-        # Generate LiveKit token
-        try:
-            token = generate_livekit_token(session_id, request.userName)
-        except Exception as e:
-            print(f"[Session] Token generation failed for {session_id}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"LiveKit token generation failed: {str(e)}"
-            )
+        # Use LogContext for request correlation
+        with LogContext(session_id=session_id, user_name=request.userName):
+            logger.info("session_start_requested",
+                       voice_id=request.voiceId or 'Ashley',
+                       opening_line=request.openingLine or 'default')
+
+            # Generate LiveKit token
+            try:
+                token = generate_livekit_token(session_id, request.userName)
+            except Exception as e:
+                logger.error("session_token_generation_failed", error=str(e), exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"LiveKit token generation failed: {str(e)}"
+                )
 
         # Store user config in Redis (for voice customization)
         try:
@@ -343,10 +355,10 @@ async def start_session(request: SessionStartRequest):
                 config_data['updatedAt'] = str(int(time.time()))
 
                 redis_client.hset(config_key, mapping=config_data)
-                print(f"[Session] Stored user config for {request.userName}")
+                logger.info("user_config_stored", user_name=request.userName, config=config_data)
         except Exception as e:
             # Non-fatal, just log
-            print(f"[Session] Warning: Failed to store user config: {e}")
+            logger.warning("user_config_store_failed", user_name=request.userName, error=str(e))
 
         # Trigger Celery task to spawn voice agent
         try:
@@ -356,9 +368,9 @@ async def start_session(request: SessionStartRequest):
                 prewarm=False
             )
             task_id = task.id
-            print(f"[Session] Celery task queued: {task_id}")
+            logger.info("celery_task_queued", task_id=task_id)
         except Exception as e:
-            print(f"[Session] Celery task failed for {session_id}: {e}")
+            logger.error("celery_task_failed", error=str(e), exc_info=True)
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to queue voice agent spawn task: {str(e)}"
@@ -378,14 +390,15 @@ async def start_session(request: SessionStartRequest):
             redis_client.hset(session_key, mapping=session_data)
             redis_client.expire(session_key, 7200)  # 2 hours
 
-            print(f"[Session] Session state stored in Redis: {session_id}")
+            logger.info("session_state_stored", ttl_seconds=7200)
         except Exception as e:
             # Non-fatal for now, but log prominently
-            print(f"[Session] WARNING: Failed to store session in Redis: {e}")
-            print(f"[Session] Cleanup may not work properly for {session_id}")
+            logger.warning("session_state_store_failed", error=str(e),
+                         warning="Cleanup may not work properly")
 
-        print(f"[Session] Started session {session_id} for user {request.userName}")
-        print(f"[Session] Voice: {request.voiceId or 'Ashley'}, Opening line: {request.openingLine or 'default'}")
+        logger.info("session_started",
+                   voice_id=request.voiceId or 'Ashley',
+                   opening_line=request.openingLine or 'default')
 
         return SessionStartResponse(
             success=True,
@@ -400,7 +413,7 @@ async def start_session(request: SessionStartRequest):
         # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        print(f"[Error] Unexpected error in start_session: {str(e)}")
+        logger.error("session_start_unexpected_error", session_id=session_id, error=str(e), exc_info=True)
         # Attempt cleanup if session was partially created
         if session_id:
             try:
@@ -409,7 +422,7 @@ async def start_session(request: SessionStartRequest):
                 pass
         raise HTTPException(status_code=500, detail=f"Failed to start session: {str(e)}")
 
-@app.post("/api/session/end", response_model=SessionEndResponse)
+@app.post("/orchestrator/session/end", response_model=SessionEndResponse)
 async def end_session(request: SessionEndRequest):
     """
     End a voice assistant session
@@ -432,40 +445,41 @@ async def end_session(request: SessionEndRequest):
     try:
         session_id = request.sessionId
 
-        # Check if session exists
-        session_exists = redis_client.exists(f"session:{session_id}")
-        if not session_exists:
-            print(f"[Session] Session {session_id} not found")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session {session_id} not found"
-            )
+        with LogContext(session_id=session_id):
+            # Check if session exists
+            session_exists = redis_client.exists(f"session:{session_id}")
+            if not session_exists:
+                logger.warning("session_not_found")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Session {session_id} not found"
+                )
 
-        print(f"[Session] Ending session {session_id}")
+            logger.info("session_end_requested")
 
-        # Perform cleanup
-        cleanup_details = await cleanup_session(session_id)
+            # Perform cleanup
+            cleanup_details = await cleanup_session(session_id)
 
-        # Check if cleanup had errors
-        if cleanup_details["errors"]:
-            print(f"[Session] Cleanup completed with errors: {cleanup_details['errors']}")
+            # Check if cleanup had errors
+            if cleanup_details["errors"]:
+                logger.warning("session_ended_with_errors", errors=cleanup_details['errors'])
+                return SessionEndResponse(
+                    success=True,  # Still return success if partial cleanup worked
+                    message=f"Session {session_id} ended with warnings",
+                    details=cleanup_details
+                )
+
+            logger.info("session_ended_successfully")
             return SessionEndResponse(
-                success=True,  # Still return success if partial cleanup worked
-                message=f"Session {session_id} ended with warnings",
+                success=True,
+                message=f"Session {session_id} ended and cleaned up",
                 details=cleanup_details
             )
-
-        print(f"[Session] Session {session_id} ended successfully")
-        return SessionEndResponse(
-            success=True,
-            message=f"Session {session_id} ended and cleaned up",
-            details=cleanup_details
-        )
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Error] Failed to end session {request.sessionId}: {str(e)}")
+        logger.error("session_end_failed", session_id=request.sessionId, error=str(e), exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to end session: {str(e)}"
@@ -497,16 +511,16 @@ async def livekit_webhook(request: Request, x_livekit_signature: Optional[str] =
         # Verify signature
         if x_livekit_signature:
             if not verify_livekit_webhook(body, x_livekit_signature):
-                print(f"[Webhook] Invalid signature")
+                logger.warning("webhook_invalid_signature")
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         else:
-            print(f"[Webhook] WARNING: No signature provided (allowing for development)")
+            logger.warning("webhook_no_signature", warning="Allowing for development")
 
         # Parse event
         try:
             event_data = json.loads(body.decode('utf-8'))
         except Exception as e:
-            print(f"[Webhook] Invalid JSON payload: {e}")
+            logger.error("webhook_invalid_json", error=str(e), exc_info=True)
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
         event_type = event_data.get('event')
@@ -516,31 +530,35 @@ async def livekit_webhook(request: Request, x_livekit_signature: Optional[str] =
         room_name = room_data.get('name') or room_data.get('id')
         participant_identity = participant_data.get('identity')
 
-        print(f"[Webhook] Received event: {event_type}, room: {room_name}, participant: {participant_identity}")
+        logger.info("webhook_event_received",
+                   event_type=event_type,
+                   room=room_name,
+                   participant=participant_identity)
 
         # Handle disconnect events
         if event_type in ['participant_left', 'room_finished']:
             if room_name and room_name.startswith('session_'):
                 session_id = room_name
 
-                print(f"[Webhook] Disconnect detected for session {session_id}")
+                with LogContext(session_id=session_id):
+                    logger.info("webhook_disconnect_detected", event_type=event_type)
 
-                # Trigger cleanup asynchronously
-                try:
-                    cleanup_details = await cleanup_session(session_id)
-                    print(f"[Webhook] Cleanup initiated for {session_id}: {cleanup_details}")
-                except Exception as e:
-                    print(f"[Webhook] Cleanup failed for {session_id}: {e}")
+                    # Trigger cleanup asynchronously
+                    try:
+                        cleanup_details = await cleanup_session(session_id)
+                        logger.info("webhook_cleanup_initiated", cleanup_details=cleanup_details)
+                    except Exception as e:
+                        logger.error("webhook_cleanup_failed", error=str(e), exc_info=True)
 
         return {"status": "ok", "event": event_type}
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Webhook] Error processing webhook: {e}")
+        logger.error("webhook_processing_error", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
-@app.get("/health")
+@app.get("/orchestrator/health")
 async def health_check():
     """Detailed health check"""
     redis_healthy = False
@@ -548,10 +566,13 @@ async def health_check():
         redis_client.ping()
         redis_healthy = True
     except Exception as e:
-        print(f"[Health] Redis check failed: {e}")
+        logger.error("health_redis_check_failed", error=str(e), exc_info=True)
+
+    status = "healthy" if redis_healthy else "degraded"
+    logger.info("health_check", status=status, redis_connected=redis_healthy)
 
     return {
-        "status": "healthy" if redis_healthy else "degraded",
+        "status": status,
         "livekit_url": LIVEKIT_URL,
         "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
         "redis_connected": redis_healthy,

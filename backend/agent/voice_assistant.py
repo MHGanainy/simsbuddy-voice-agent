@@ -6,8 +6,10 @@ import signal
 import argparse
 
 from dotenv import load_dotenv
-from loguru import logger
 import aiohttp
+
+# Import structured logging
+from backend.common.logging_config import setup_logging, LogContext
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -33,8 +35,8 @@ from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 load_dotenv(override=True)
 
-logger.remove(0)
-logger.add(sys.stderr, level="DEBUG")
+# Setup logging
+logger = setup_logging(service_name='voice-agent')
 
 # ==================== ENVIRONMENT VALIDATION ====================
 def validate_environment():
@@ -51,13 +53,13 @@ def validate_environment():
             missing.append(f"  - {var}: {description}")
 
     if missing:
-        logger.error("FATAL: Missing required environment variables:")
-        for msg in missing:
-            logger.error(msg)
-        logger.error("Please check your .env file and ensure all required variables are set.")
+        logger.error("environment_validation_failed",
+                    missing_variables=missing,
+                    message="Please check your .env file",
+                    exc_info=True)
         sys.exit(1)
 
-    logger.info("✓ Environment variables validated")
+    logger.info("environment_validated")
 
 validate_environment()
 
@@ -73,83 +75,85 @@ async def main(voice_id="Ashley", opening_line=None):
     transport = None
 
     try:
-        logger.info(f"Starting voice assistant bot with voice: {voice_id}")
+        logger.info("voice_assistant_starting", voice_id=voice_id, opening_line=opening_line)
 
         # Configure LiveKit connection
         try:
             (url, token, room_name) = await configure()
-            logger.info(f"Configured for room: {room_name}")
+            logger.info("livekit_configured", room_name=room_name)
         except Exception as e:
-            logger.error(f"Failed to configure LiveKit: {e}")
+            logger.error("livekit_configuration_failed", error=str(e), exc_info=True)
             raise
 
         # Validate connection parameters
         if not url or not token or not room_name:
             raise ValueError("Missing LiveKit configuration parameters")
 
-        # Create transport
-        try:
-            transport = LiveKitTransport(
-                url=url,
-                token=token,
-                room_name=room_name,
-                params=LiveKitParams(
-                    audio_in_enabled=True,
-                    audio_out_enabled=True,
-                    vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-                    turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
-                ),
-            )
-            logger.info("LiveKit transport created")
-        except Exception as e:
-            logger.error(f"Failed to create LiveKit transport: {e}")
-            raise
+        # Use LogContext to track session throughout the lifecycle
+        with LogContext(session_id=room_name, voice_id=voice_id):
+            # Create transport
+            try:
+                transport = LiveKitTransport(
+                    url=url,
+                    token=token,
+                    room_name=room_name,
+                    params=LiveKitParams(
+                        audio_in_enabled=True,
+                        audio_out_enabled=True,
+                        vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+                    ),
+                )
+                logger.info("livekit_transport_created")
+            except Exception as e:
+                logger.error("livekit_transport_creation_failed", error=str(e), exc_info=True)
+                raise
 
-        # Create STT service (AssemblyAI)
-        try:
-            stt = AssemblyAISTTService(api_key=os.getenv("ASSEMBLY_API_KEY"))
-            logger.info("AssemblyAI STT service initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize AssemblyAI STT: {e}")
-            raise
+            # Create STT service (AssemblyAI)
+            try:
+                stt = AssemblyAISTTService(api_key=os.getenv("ASSEMBLY_API_KEY"))
+                logger.info("assemblyai_stt_initialized")
+            except Exception as e:
+                logger.error("assemblyai_stt_initialization_failed", error=str(e), exc_info=True)
+                raise
 
-        # Create LLM service (Groq)
-        try:
-            llm = GroqLLMService(
-                api_key=os.getenv("GROQ_API_KEY"),
-                model="llama-3.3-70b-versatile"
-            )
-            logger.info("Groq LLM service initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize Groq LLM: {e}")
-            raise
+            # Create LLM service (Groq)
+            try:
+                llm = GroqLLMService(
+                    api_key=os.getenv("GROQ_API_KEY"),
+                    model="llama-3.3-70b-versatile"
+                )
+                logger.info("groq_llm_initialized", model="llama-3.3-70b-versatile")
+            except Exception as e:
+                logger.error("groq_llm_initialization_failed", error=str(e), exc_info=True)
+                raise
 
-        # Create aiohttp session for InworldTTS
-        # This session needs to stay alive throughout the pipeline execution
-        try:
-            session = aiohttp.ClientSession()
-            logger.info("HTTP session created for TTS")
-        except Exception as e:
-            logger.error(f"Failed to create HTTP session: {e}")
-            raise
+            # Create aiohttp session for InworldTTS
+            # This session needs to stay alive throughout the pipeline execution
+            try:
+                session = aiohttp.ClientSession()
+                logger.info("http_session_created")
+            except Exception as e:
+                logger.error("http_session_creation_failed", error=str(e), exc_info=True)
+                raise
 
-        # Create TTS service (Inworld)
-        try:
-            inworld_key = os.getenv("INWORLD_API_KEY", "")
-            if not inworld_key:
-                raise ValueError("INWORLD_API_KEY is empty")
+            # Create TTS service (Inworld)
+            try:
+                inworld_key = os.getenv("INWORLD_API_KEY", "")
+                if not inworld_key:
+                    raise ValueError("INWORLD_API_KEY is empty")
 
-            tts = InworldTTSService(
-                api_key=inworld_key,
-                aiohttp_session=session,
-                voice_id=voice_id,  # Configured via command-line or API
-                model="inworld-tts-1",
-                streaming=True,
-            )
-            logger.info(f"Inworld TTS service initialized with voice: {voice_id}")
-        except Exception as e:
-            logger.error(f"Failed to initialize Inworld TTS: {e}")
-            raise
+                tts = InworldTTSService(
+                    api_key=inworld_key,
+                    aiohttp_session=session,
+                    voice_id=voice_id,  # Configured via command-line or API
+                    model="inworld-tts-1",
+                    streaming=True,
+                )
+                logger.info("inworld_tts_initialized", voice_id=voice_id, model="inworld-tts-1")
+            except Exception as e:
+                logger.error("inworld_tts_initialization_failed", error=str(e), exc_info=True)
+                raise
 
         # Create conversation context
         messages = [
@@ -191,7 +195,7 @@ async def main(voice_id="Ashley", opening_line=None):
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant_id):
             try:
-                logger.info(f"First participant joined: {participant_id}")
+                logger.info("participant_joined", participant_id=participant_id)
                 await asyncio.sleep(1)
 
                 # Use custom opening line or default
@@ -200,9 +204,9 @@ async def main(voice_id="Ashley", opening_line=None):
                 await task.queue_frame(
                     TTSSpeakFrame(greeting)
                 )
-                logger.info(f"Sent opening line: {greeting[:50]}...")
+                logger.info("opening_line_sent", greeting_preview=greeting[:50])
             except Exception as e:
-                logger.error(f"Error in on_first_participant_joined: {e}")
+                logger.error("participant_join_handler_error", error=str(e), exc_info=True)
 
         # Register an event handler to receive data from the participant via text chat
         # in the LiveKit room. This will be used to as transcription frames and
@@ -211,7 +215,7 @@ async def main(voice_id="Ashley", opening_line=None):
         @transport.event_handler("on_data_received")
         async def on_data_received(transport, data, participant_id):
             try:
-                logger.info(f"Received data from participant {participant_id}: {data}")
+                logger.info("data_received", participant_id=participant_id, data=str(data))
                 # convert data from bytes to string
                 json_data = json.loads(data)
 
@@ -228,37 +232,37 @@ async def main(voice_id="Ashley", opening_line=None):
                     ],
                 )
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON data: {e}")
+                logger.error("json_decode_error", error=str(e), exc_info=True)
             except Exception as e:
-                logger.error(f"Error in on_data_received: {e}")
+                logger.error("data_received_handler_error", error=str(e), exc_info=True)
 
         runner = PipelineRunner()
 
-        logger.info("Starting pipeline runner...")
+        logger.info("pipeline_runner_starting")
         await runner.run(task)
 
     except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt, shutting down...")
+        logger.info("keyboard_interrupt_received")
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        logger.error("fatal_error", error=str(e), exc_info=True)
         raise
     finally:
         # Clean up resources
-        logger.info("Cleaning up resources...")
+        logger.info("cleanup_started")
         if session and not session.closed:
             try:
                 await session.close()
-                logger.info("HTTP session closed")
+                logger.info("http_session_closed")
             except Exception as e:
-                logger.error(f"Error closing session: {e}")
+                logger.error("session_close_error", error=str(e), exc_info=True)
 
-        logger.info("Bot shutdown complete")
+        logger.info("shutdown_complete")
 
 
 # ==================== GRACEFUL SHUTDOWN ====================
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
-    logger.warning(f"Received signal {signum}, initiating graceful shutdown...")
+    logger.warning("signal_received", signal=signum, action="graceful_shutdown")
     sys.exit(0)
 
 
@@ -284,7 +288,7 @@ if __name__ == "__main__":
             opening_line=args.opening_line
         ))
     except KeyboardInterrupt:
-        logger.info("Shutting down on keyboard interrupt")
+        logger.info("keyboard_interrupt_shutdown")
     except Exception as e:
-        logger.error(f"Unhandled exception: {e}", exc_info=True)
+        logger.error("unhandled_exception", error=str(e), exc_info=True)
         sys.exit(1)

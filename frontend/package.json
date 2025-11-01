@@ -1,27 +1,26 @@
 {
-  "name": "livekit-voice-assistant",
-  "version": "0.1.0",
-  "private": true,
+  "name": "voice-agent-minimal-frontend",
+  "version": "1.0.0",
+  "description": "Minimal development/testing interface for LiveKit voice agent",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
   "dependencies": {
     "@livekit/components-react": "^2.0.0",
     "@livekit/components-styles": "^1.0.0",
     "livekit-client": "^2.0.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "axios": "^1.6.0"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",
+    "dotenv": "^16.3.1",
     "typescript": "^5.3.0",
-    "vite": "^5.0.0",
-    "dotenv": "^16.3.1"
-  },
-  "scripts": {
-    "dev": "vite --mode development",
-    "build": "vite build --mode production",
-    "build:local": "vite build --mode development",
-    "preview": "vite preview"
+    "vite": "^5.0.0"
   }
 }

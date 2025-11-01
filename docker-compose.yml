@@ -53,12 +53,20 @@ services:
 
       # Python path for absolute imports
       PYTHONPATH: /app
+
+      # Logging configuration
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+      LOG_FORMAT: ${LOG_FORMAT:-console}  # console (dev) or json (prod)
+      SERVICE_NAME: orchestrator
+      AGENT_LOG_DIR: /var/log/voice-agents
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       # Mount for development (comment out for production)
       - ./backend:/app/backend
+      # Voice agent logs (persistent storage)
+      - voice-agent-logs:/var/log/voice-agents
     networks:
       - voice-agent-network
     restart: unless-stopped
@@ -69,16 +77,20 @@ services:
       retries: 3
       start_period: 40s
 
-  # Frontend - React application
+  # Frontend - React application (simplified dev interface)
   frontend:
     build:
       context: ./frontend
       dockerfile: ../docker/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     container_name: voice-agent-frontend
     ports:
       - "3000:3000"
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     depends_on:
       - orchestrator
     networks:
@@ -87,6 +99,8 @@ services:
 
 volumes:
   redis-data:
+    driver: local
+  voice-agent-logs:
     driver: local
 
 networks:

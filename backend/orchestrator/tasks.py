@@ -9,13 +9,19 @@ This module defines asynchronous tasks for:
 """
 
 from celery import Celery, Task
-from celery.schedules import crontab
 import subprocess
 import redis
 import time
 import os
 import uuid
 import signal
+import threading
+
+# Import structured logging
+from backend.common.logging_config import setup_logging, LogContext
+
+# Setup logging
+logger = setup_logging(service_name='celery-worker')
 
 # Initialize Celery
 app = Celery('voice_agent_tasks')
@@ -29,6 +35,10 @@ PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_a
 BOT_STARTUP_TIMEOUT = int(os.getenv('BOT_STARTUP_TIMEOUT', 30))  # Increased for ML model loading
 PREWARM_POOL_SIZE = int(os.getenv('PREWARM_POOL_SIZE', 3))
 MAX_LOG_ENTRIES = 100
+AGENT_LOG_DIR = os.getenv('AGENT_LOG_DIR', '/var/log/voice-agents')
+
+# Ensure log directory exists
+os.makedirs(AGENT_LOG_DIR, exist_ok=True)
 
 
 class AgentSpawnTask(Task):
@@ -38,6 +48,48 @@ class AgentSpawnTask(Task):
     retry_backoff = True
     retry_backoff_max = 60
     retry_jitter = True
+
+
+def continuous_log_reader(process, session_id, log_file_path):
+    """
+    Background thread to continuously read agent logs.
+
+    This prevents the stdout pipe from filling up and blocking the agent process.
+    Logs are written to both a file and Redis for different access patterns.
+
+    Args:
+        process: The subprocess.Popen object
+        session_id: Session identifier for Redis keys
+        log_file_path: Path to the log file
+    """
+    try:
+        with open(log_file_path, 'a', buffering=1) as log_file:  # Line buffered
+            for line in process.stdout:
+                if not line:
+                    break
+
+                line = line.strip()
+
+                # Write to file (for tail -f and long-term storage)
+                log_file.write(line + '\n')
+
+                # Store in Redis (for API access, keep last 100 lines)
+                try:
+                    redis_client.rpush(f'agent:{session_id}:logs', line)
+                    redis_client.ltrim(f'agent:{session_id}:logs', -MAX_LOG_ENTRIES, -1)
+                except Exception as e:
+                    # Don't let Redis errors stop log file writing
+                    logger.warning("log_reader_redis_error",
+                                 session_id=session_id,
+                                 error=str(e))
+
+    except Exception as e:
+        logger.error("log_reader_thread_error",
+                    session_id=session_id,
+                    error=str(e),
+                    exc_info=True)
+    finally:
+        logger.info("log_reader_thread_stopped", session_id=session_id)
 
 
 @app.task(base=AgentSpawnTask, bind=True, name='spawn_voice_agent')
@@ -56,166 +108,193 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
     start_time = time.time()
     task_id = self.request.id
 
-    try:
-        print(f"[Task {task_id}] Spawning agent for session: {session_id}")
+    # Use LogContext for correlation tracking
+    with LogContext(session_id=session_id, task_id=task_id, user_id=user_id):
+        try:
+            logger.info("agent_spawn_started", prewarm=prewarm)
 
-        # Fetch user configuration if user_id is provided
-        voice_id = 'Ashley'  # Default voice
-        opening_line = None
+            # Fetch user configuration if user_id is provided
+            voice_id = 'Ashley'  # Default voice
+            opening_line = None
 
-        if user_id:
-            try:
-                config_key = f'user:{user_id}:config'
-                config = redis_client.hgetall(config_key)
-                if config and b'voiceId' in config:
-                    voice_id = config[b'voiceId'].decode('utf-8')
-                    if b'openingLine' in config:
-                        opening_line = config[b'openingLine'].decode('utf-8')
-                    print(f"[Task {task_id}] Using user config: voice={voice_id}, opening_line={opening_line[:50] if opening_line else 'default'}...")
-            except Exception as e:
-                print(f"[Task {task_id}] Error fetching user config: {e}, using defaults")
-
-        # Update session status
-        redis_client.hset(f'session:{session_id}', mapping={
-            'status': 'starting',
-            'userId': user_id or '',
-            'voiceId': voice_id,
-            'createdAt': int(time.time()),
-            'celeryTaskId': task_id
-        })
-        redis_client.sadd('session:starting', session_id)
-
-        # Build command with voice customization
-        cmd = ['python3', PYTHON_SCRIPT_PATH, '--room', session_id, '--voice-id', voice_id]
-        if opening_line:
-            cmd.extend(['--opening-line', opening_line])
-
-        # Spawn Python process
-        # Use start_new_session to detach from parent and prevent zombies
-        # Redirect stderr to stdout so we can read all logs from one stream
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Merge stderr into stdout
-            text=True,
-            bufsize=1,
-            env=os.environ.copy(),
-            start_new_session=True  # Detach from parent process group
-        )
-
-        pid = process.pid
-
-        # Store PID in both locations immediately for cleanup access
-        redis_client.set(f'agent:{session_id}:pid', pid, ex=7200)  # 2 hour TTL
-        redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
-
-        print(f"[Task {task_id}] Process spawned with PID: {pid}")
-
-        # Monitor stdout for connection success (stderr is redirected to stdout)
-        connected = False
-        last_check = time.time()
-
-        while time.time() - start_time < BOT_STARTUP_TIMEOUT:
-            # Check if process died
-            if process.poll() is not None:
-                # Read any remaining output
-                remaining_output = process.stdout.read() if process.stdout else ""
-                error_msg = f"Agent process died unexpectedly: {remaining_output}"
-                print(f"[Task {task_id}] ERROR: {error_msg}")
-                raise Exception(error_msg)
-
-            # Read stdout line (non-blocking with timeout)
-            try:
-                line = process.stdout.readline()
-                if line:
-                    line = line.strip()
-                    redis_client.rpush(f'agent:{session_id}:logs', line)
-                    redis_client.ltrim(f'agent:{session_id}:logs', -MAX_LOG_ENTRIES, -1)
-
-                    # Check for connection success patterns
-                    # Pre-warmed agents are ready after initialization (no user to connect to yet)
-                    # User agents wait for actual LiveKit connection
-                    if prewarm:
-                        if any(keyword in line for keyword in ['Inworld TTS service initialized', 'LiveKitInputTransport', 'Pipeline#0::Source']):
-                            connected = True
-                            print(f"[Task {task_id}] Pre-warmed agent initialized: {line}")
-                            break
-                    else:
-                        if any(keyword in line for keyword in ['Connected to', 'Pipeline started', 'Room joined', 'Participant joined']):
-                            connected = True
-                            print(f"[Task {task_id}] Agent connected successfully: {line}")
-                            break
-
-            except Exception as e:
-                print(f"[Task {task_id}] Error reading stdout: {e}")
-
-            # Progress log every 5 seconds
-            if time.time() - last_check > 5:
-                elapsed = time.time() - start_time
-                print(f"[Task {task_id}] Still waiting for connection... ({elapsed:.1f}s elapsed)")
-                last_check = time.time()
-
-            time.sleep(0.1)
-
-        if not connected:
-            print(f"[Task {task_id}] Timeout - agent failed to connect within {BOT_STARTUP_TIMEOUT}s")
-            process.terminate()
-            time.sleep(2)
-            if process.poll() is None:
-                process.kill()
-            raise Exception(f"Agent failed to connect within {BOT_STARTUP_TIMEOUT}s")
-
-        # Update session to ready
-        startup_time = time.time() - start_time
-        redis_client.hset(f'session:{session_id}', mapping={
-            'status': 'ready',
-            'agentPid': pid,
-            'startupTime': startup_time,
-            'lastActive': int(time.time())
-        })
-
-        # Move to appropriate state
-        redis_client.srem('session:starting', session_id)
-        if prewarm:
-            redis_client.sadd('pool:ready', session_id)
-            print(f"[Task {task_id}] Pre-warmed agent ready: {session_id}")
-        else:
-            redis_client.sadd('session:ready', session_id)
             if user_id:
-                redis_client.set(f'session:user:{user_id}', session_id)
-            print(f"[Task {task_id}] User agent ready: {session_id} (user: {user_id})")
+                try:
+                    config_key = f'user:{user_id}:config'
+                    config = redis_client.hgetall(config_key)
+                    if config and b'voiceId' in config:
+                        voice_id = config[b'voiceId'].decode('utf-8')
+                        if b'openingLine' in config:
+                            opening_line = config[b'openingLine'].decode('utf-8')
+                        logger.info("user_config_loaded",
+                                   voice_id=voice_id,
+                                   opening_line_preview=opening_line[:50] if opening_line else 'default')
+                except Exception as e:
+                    logger.warning("user_config_load_failed", error=str(e), fallback="defaults")
 
-        # Update pool stats
-        redis_client.hincrby('pool:stats', 'total_spawned', 1)
+            # Update session status
+            redis_client.hset(f'session:{session_id}', mapping={
+                'status': 'starting',
+                'userId': user_id or '',
+                'voiceId': voice_id,
+                'createdAt': int(time.time()),
+                'celeryTaskId': task_id
+            })
+            redis_client.sadd('session:starting', session_id)
 
-        result = {
-            'session_id': session_id,
-            'pid': pid,
-            'status': 'ready',
-            'startup_time': startup_time
-        }
-        print(f"[Task {task_id}] Success: {result}")
-        return result
+            # Build command with voice customization
+            cmd = ['python3', PYTHON_SCRIPT_PATH, '--room', session_id, '--voice-id', voice_id]
+            if opening_line:
+                cmd.extend(['--opening-line', opening_line])
 
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[Task {task_id}] FAILED: {error_msg}")
+            # Create log file path for this agent
+            log_file_path = os.path.join(AGENT_LOG_DIR, f'{session_id}.log')
 
-        # Mark session as failed
-        redis_client.hset(f'session:{session_id}', mapping={
-            'status': 'error',
-            'error': error_msg,
-            'lastActive': int(time.time())
-        })
-        redis_client.srem('session:starting', session_id)
+            # Spawn Python process
+            # Use start_new_session to detach from parent and prevent zombies
+            # Redirect stderr to stdout so we can read all logs from one stream
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                text=True,
+                bufsize=1,
+                env=os.environ.copy(),
+                start_new_session=True  # Detach from parent process group
+            )
 
-        # Retry if not max retries
-        if self.request.retries < self.max_retries:
-            retry_num = self.request.retries + 1
-            print(f"[Task {task_id}] Retrying... (attempt {retry_num}/{self.max_retries})")
-            raise self.retry(exc=e)
+            pid = process.pid
 
-        raise
+            # Store PID and log file path in Redis for cleanup and access
+            redis_client.set(f'agent:{session_id}:pid', pid, ex=7200)  # 2 hour TTL
+            redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=7200)
+            redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+            redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
+
+            logger.info("agent_process_spawned", pid=pid, voice_id=voice_id, log_file=log_file_path)
+
+            # Start background thread for continuous log reading
+            # This prevents the pipe from filling up and blocking the agent
+            log_thread = threading.Thread(
+                target=continuous_log_reader,
+                args=(process, session_id, log_file_path),
+                daemon=True,
+                name=f'log-reader-{session_id}'
+            )
+            log_thread.start()
+            logger.info("log_reader_thread_started", session_id=session_id, thread_name=log_thread.name)
+
+            # Monitor log file for connection success
+            # The background thread is reading stdout and writing to the log file
+            connected = False
+            last_check = time.time()
+            log_check_offset = 0  # Track how many lines we've read
+
+            while time.time() - start_time < BOT_STARTUP_TIMEOUT:
+                # Check if process died
+                if process.poll() is not None:
+                    error_msg = f"Agent process died unexpectedly (exit code: {process.returncode})"
+                    logger.error("agent_process_died",
+                               exit_code=process.returncode,
+                               log_file=log_file_path,
+                               exc_info=True)
+                    raise Exception(error_msg)
+
+                # Read new lines from Redis logs (written by background thread)
+                try:
+                    new_lines = redis_client.lrange(f'agent:{session_id}:logs', log_check_offset, -1)
+                    if new_lines:
+                        log_check_offset += len(new_lines)
+
+                        # Check for connection success patterns in new lines
+                        for line_bytes in new_lines:
+                            line = line_bytes.decode('utf-8') if isinstance(line_bytes, bytes) else line_bytes
+
+                            # Pre-warmed agents are ready after initialization
+                            # User agents wait for actual LiveKit connection
+                            if prewarm:
+                                if any(keyword in line for keyword in ['Inworld TTS service initialized', 'LiveKitInputTransport', 'Pipeline#0::Source']):
+                                    connected = True
+                                    logger.info("agent_prewarmed_initialized", log_line=line[:100])
+                                    break
+                            else:
+                                if any(keyword in line for keyword in ['Connected to', 'Pipeline started', 'Room joined', 'Participant joined']):
+                                    connected = True
+                                    logger.info("agent_connected_successfully", log_line=line[:100])
+                                    break
+
+                        if connected:
+                            break
+
+                except Exception as e:
+                    logger.warning("agent_log_check_error", error=str(e))
+
+                # Progress log every 5 seconds
+                if time.time() - last_check > 5:
+                    elapsed = time.time() - start_time
+                    logger.debug("agent_connection_waiting", elapsed_seconds=f"{elapsed:.1f}")
+                    last_check = time.time()
+
+                time.sleep(0.2)  # Check every 200ms
+
+            if not connected:
+                logger.error("agent_connection_timeout", timeout_seconds=BOT_STARTUP_TIMEOUT)
+                process.terminate()
+                time.sleep(2)
+                if process.poll() is None:
+                    process.kill()
+                raise Exception(f"Agent failed to connect within {BOT_STARTUP_TIMEOUT}s")
+
+            # Update session to ready
+            startup_time = time.time() - start_time
+            redis_client.hset(f'session:{session_id}', mapping={
+                'status': 'ready',
+                'agentPid': pid,
+                'startupTime': startup_time,
+                'lastActive': int(time.time())
+            })
+
+            # Move to appropriate state
+            redis_client.srem('session:starting', session_id)
+            if prewarm:
+                redis_client.sadd('pool:ready', session_id)
+                logger.info("agent_prewarmed_ready", startup_time_seconds=f"{startup_time:.2f}")
+            else:
+                redis_client.sadd('session:ready', session_id)
+                if user_id:
+                    redis_client.set(f'session:user:{user_id}', session_id)
+                logger.info("agent_user_ready", startup_time_seconds=f"{startup_time:.2f}")
+
+            # Update pool stats
+            redis_client.hincrby('pool:stats', 'total_spawned', 1)
+
+            result = {
+                'session_id': session_id,
+                'pid': pid,
+                'status': 'ready',
+                'startup_time': startup_time
+            }
+            logger.info("agent_spawn_success", result=result)
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error("agent_spawn_failed", error=error_msg, exc_info=True)
+
+            # Mark session as failed
+            redis_client.hset(f'session:{session_id}', mapping={
+                'status': 'error',
+                'error': error_msg,
+                'lastActive': int(time.time())
+            })
+            redis_client.srem('session:starting', session_id)
+
+            # Retry if not max retries
+            if self.request.retries < self.max_retries:
+                retry_num = self.request.retries + 1
+                logger.info("agent_spawn_retrying", retry_num=retry_num, max_retries=self.max_retries)
+                raise self.retry(exc=e)
+
+            raise
 
 
 @app.task(name='prewarm_agent_pool')
@@ -231,18 +310,21 @@ def prewarm_agent_pool():
         deficit = target_size - current_size
 
         if deficit > 0:
-            print(f"[PreWarm] Pool deficit: {deficit} (current: {current_size}, target: {target_size})")
+            logger.info("pool_deficit_detected",
+                       deficit=deficit,
+                       current_size=current_size,
+                       target_size=target_size)
 
             for i in range(deficit):
                 session_id = f"prewarm_{uuid.uuid4().hex[:8]}"
-                print(f"[PreWarm] Spawning agent {i+1}/{deficit}: {session_id}")
+                logger.info("pool_spawning_agent", agent_num=i+1, total=deficit, session_id=session_id)
                 spawn_voice_agent.delay(session_id, user_id=None, prewarm=True)
 
         else:
-            print(f"[PreWarm] Pool healthy: {current_size}/{target_size}")
+            logger.debug("pool_healthy", current_size=current_size, target_size=target_size)
 
     except Exception as e:
-        print(f"[PreWarm] ERROR: {e}")
+        logger.error("pool_prewarm_error", error=str(e), exc_info=True)
 
 
 @app.task(name='health_check_agents')
@@ -303,17 +385,23 @@ def health_check_agents():
 
             except (ProcessLookupError, OSError):
                 # Process is dead
-                print(f"[HealthCheck] Agent {session_id} (PID {pid}) is dead - marking as failed")
+                logger.warning("healthcheck_agent_dead",
+                             session_id=session_id,
+                             pid=pid,
+                             action="marking_as_failed")
                 redis_client.hset(f'session:{session_id}', 'status', 'error')
                 redis_client.hset(f'session:{session_id}', 'error', 'Process died unexpectedly')
                 redis_client.srem('pool:ready', session_id)
                 redis_client.srem('session:ready', session_id)
                 dead_count += 1
 
-        print(f"[HealthCheck] Checked: {checked_count}, Healthy: {healthy_count}, Dead: {dead_count}")
+        logger.info("healthcheck_complete",
+                   checked=checked_count,
+                   healthy=healthy_count,
+                   dead=dead_count)
 
     except Exception as e:
-        print(f"[HealthCheck] ERROR: {e}")
+        logger.error("healthcheck_error", error=str(e), exc_info=True)
 
 
 @app.task(name='cleanup_stale_agents')
@@ -351,7 +439,9 @@ def cleanup_stale_agents():
             last_active = int(session_data.get('lastActive', session_data.get('createdAt', 0)))
 
             if now - last_active > timeout:
-                print(f"[Cleanup] Removing stale session: {session_id} (inactive for {now - last_active}s)")
+                logger.info("cleanup_stale_session",
+                           session_id=session_id,
+                           inactive_seconds=now - last_active)
 
                 # Stop agent process
                 pid = session_data.get('agentPid')
@@ -372,6 +462,7 @@ def cleanup_stale_agents():
                 redis_client.delete(f'session:{session_id}')
                 redis_client.delete(f'agent:{session_id}:pid')
                 redis_client.delete(f'agent:{session_id}:logs')
+                redis_client.delete(f'agent:{session_id}:logfile')
                 redis_client.delete(f'agent:{session_id}:health')
                 redis_client.srem('pool:ready', session_id)
                 redis_client.srem('session:ready', session_id)
@@ -379,15 +470,26 @@ def cleanup_stale_agents():
                 if user_id:
                     redis_client.delete(f'session:user:{user_id}')
 
+                # Clean up log file
+                log_file = session_data.get('logFile')
+                if log_file and os.path.exists(log_file):
+                    try:
+                        os.remove(log_file)
+                        logger.debug("cleanup_log_file_removed", log_file=log_file)
+                    except Exception as e:
+                        logger.warning("cleanup_log_file_removal_failed",
+                                     log_file=log_file,
+                                     error=str(e))
+
                 cleaned_count += 1
 
         if cleaned_count > 0:
-            print(f"[Cleanup] Cleaned up {cleaned_count} stale sessions")
+            logger.info("cleanup_complete", cleaned_sessions=cleaned_count)
         else:
-            print(f"[Cleanup] No stale sessions found")
+            logger.debug("cleanup_no_stale_sessions")
 
     except Exception as e:
-        print(f"[Cleanup] ERROR: {e}")
+        logger.error("cleanup_error", error=str(e), exc_info=True)
 
 
 # Beat Schedule Configuration
@@ -411,8 +513,8 @@ app.conf.timezone = 'UTC'
 
 if __name__ == '__main__':
     # For testing tasks directly
-    print("Celery tasks loaded successfully")
-    print(f"Redis URL: {os.getenv('REDIS_URL', 'Not set')}")
-    print(f"Python script path: {PYTHON_SCRIPT_PATH}")
-    print(f"Bot startup timeout: {BOT_STARTUP_TIMEOUT}s")
-    print(f"Pre-warm pool size: {PREWARM_POOL_SIZE}")
+    logger.info("celery_tasks_loaded",
+               redis_url=os.getenv('REDIS_URL', 'Not set'),
+               python_script_path=PYTHON_SCRIPT_PATH,
+               bot_startup_timeout=BOT_STARTUP_TIMEOUT,
+               prewarm_pool_size=PREWARM_POOL_SIZE)
