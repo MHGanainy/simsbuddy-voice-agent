@@ -688,19 +688,38 @@ railway domain
 
 ---
 
+## Troubleshooting Concurrent Sessions
+
+If you encounter issues with multiple concurrent sessions (e.g., only one session gets audio when 2+ users connect simultaneously), see:
+
+**📚 [CONCURRENT_SESSIONS_TROUBLESHOOTING.md](./CONCURRENT_SESSIONS_TROUBLESHOOTING.md)**
+
+This guide covers:
+- Root cause analysis (Inworld TTS rate limiting)
+- Fixes applied (pipecat upgrade)
+- How to request Inworld rate limit increases
+- Testing and monitoring strategies
+- Alternative TTS providers
+
+**TL;DR**: Basic Inworld plans may limit concurrent TTS sessions to 2-4. Contact Inworld support to increase limits for production use (usually granted at no cost within 48 hours).
+
+---
+
 ## Next Steps
 
 1. ✓ Complete initial Railway setup
 2. ✓ Deploy to staging environment
 3. ✓ Test all endpoints thoroughly
-4. □ Set up monitoring and alerts
-5. □ Configure custom domains
-6. □ Set up production environment
-7. □ Implement backup strategy
+4. □ Request Inworld TTS rate limit increase for production
+5. □ Set up monitoring and alerts
+6. □ Configure custom domains
+7. □ Set up production environment
+8. □ Implement backup strategy
 
 ---
 
-**Last Updated:** 2025-01-11
+**Last Updated:** 2025-11-01
 **Railway CLI Version:** 3.x
 **Python Version:** 3.11
 **Node Version:** 18
+**Pipecat Version:** 0.0.92
