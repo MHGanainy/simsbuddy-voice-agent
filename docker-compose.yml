@@ -21,12 +21,15 @@ services:
   # Orchestrator - Runs FastAPI + Celery worker + Celery beat via Supervisor
   orchestrator:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
     environment:
+      # Port (for supervisor compatibility with Railway)
+      PORT: 8000
+
       # Redis
       REDIS_URL: redis://redis:6379/0
 

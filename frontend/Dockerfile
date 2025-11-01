@@ -11,7 +11,7 @@ ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_ORCHESTRATOR_URL=$VITE_ORCHESTRATOR_URL
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci
 
 COPY . .
 RUN npm run build

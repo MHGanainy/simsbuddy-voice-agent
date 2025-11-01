@@ -10,28 +10,28 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy and install shared dependencies first (for better layer caching)
-COPY requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy and install orchestrator dependencies
-COPY orchestrator/requirements.txt ./orchestrator/requirements.txt
-RUN pip install --no-cache-dir -r orchestrator/requirements.txt
+COPY orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
 
 # Copy and install agent dependencies (needed for subprocess spawning)
-COPY agent/requirements.txt ./agent/requirements.txt
-RUN pip install --no-cache-dir -r agent/requirements.txt
+COPY agent/requirements.txt /app/backend/agent/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/agent/requirements.txt
 
-# Copy entire backend codebase
-COPY . ./
+# Copy entire backend codebase to /app/backend (consistent with docker-compose volume mount)
+COPY . /app/backend/
 
-# Copy supervisor configuration (now local to backend/)
+# Copy supervisor configuration
 COPY supervisord.conf /app/supervisord.conf
 
 # Create log directories (use /tmp for Railway ephemeral storage)
 RUN mkdir -p /tmp/supervisor
 
 # Set working directory to orchestrator (for uvicorn and celery commands)
-WORKDIR /app/orchestrator
+WORKDIR /app/backend/orchestrator
 
 # Expose port (Railway will inject $PORT at runtime)
 EXPOSE 8000
@@ -40,7 +40,7 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1 \
     C_FORCE_ROOT=true \
     PYTHONPATH=/app \
-    PYTHON_SCRIPT_PATH=/app/agent/voice_assistant.py
+    PYTHON_SCRIPT_PATH=/app/backend/agent/voice_assistant.py
 
 # Start supervisor (runs FastAPI + Celery worker + Celery beat)
 CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]
