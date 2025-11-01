@@ -1,0 +1,19 @@
+# Nixpacks Build Configuration for Railway
+# Backend Orchestrator Service
+
+[phases.setup]
+nixPkgs = ["python311", "nodejs_20", "ffmpeg-full", "supervisor"]
+
+[phases.install]
+cmds = [
+    "pip install --upgrade pip setuptools wheel",
+    "pip install -r backend/requirements.txt",
+    "pip install -r backend/orchestrator/requirements.txt",
+    "pip install -r backend/agent/requirements.txt"
+]
+
+[phases.build]
+cmds = ["echo 'Build completed successfully'"]
+
+[start]
+cmd = "supervisord -c /app/supervisord.conf"

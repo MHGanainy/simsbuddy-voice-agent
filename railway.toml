@@ -1,0 +1,15 @@
+# Railway Backend (Orchestrator) Configuration
+# Service: Voice Agent Orchestrator with FastAPI + Celery + Beat
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "supervisord -c /app/supervisord.conf"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# Railway will automatically inject PORT environment variable
+# Supervisor config must use $PORT for uvicorn

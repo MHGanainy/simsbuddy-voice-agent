@@ -1,0 +1,67 @@
+# Railway Ignore File
+# Exclude unnecessary files from backend deployment
+
+# Frontend (deployed separately)
+frontend/
+frontend-minimal/
+
+# Documentation
+Documentation/
+*.md
+!README.md
+!RAILWAY_DEPLOYMENT.md
+
+# Git and GitHub
+.git/
+.github/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files (use Railway env vars instead)
+.env
+.env.local
+.env.*.local
+
+# Node modules (if any)
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.egg
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/
+
+# Docker (not needed on Railway)
+docker-compose.yml
+docker/
+Dockerfile
