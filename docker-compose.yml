@@ -22,7 +22,7 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: docker/Dockerfile.backend
+      dockerfile: backend/Dockerfile
     container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
@@ -81,7 +81,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: ../docker/Dockerfile.frontend
+      dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
         VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}

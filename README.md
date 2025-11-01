@@ -20,15 +20,16 @@ livekit-demo/
 │   │   ├── main.py           # REST API server
 │   │   ├── tasks.py          # Celery workers
 │   │   └── celeryconfig.py   # Celery config
-│   └── agent/                # Voice assistant bot
-│       └── voice_assistant.py # Pipecat bot
+│   ├── agent/                # Voice assistant bot
+│   │   └── voice_assistant.py # Pipecat bot
+│   ├── Dockerfile            # Backend container image
+│   ├── railway.toml          # Railway deployment config
+│   └── supervisord.conf      # Process manager config
 ├── frontend/                  # React application
-│   └── src/                  # React components
-├── docker/                    # Docker configurations
-│   ├── Dockerfile.backend    # Orchestrator + Agent image
-│   └── Dockerfile.frontend   # React app image
-├── docker-compose.yml        # Service orchestration
-└── supervisord.conf          # Process manager config
+│   ├── src/                  # React components
+│   ├── Dockerfile            # Frontend container image
+│   └── railway.json          # Railway deployment config
+└── docker-compose.yml        # Local development orchestration
 ```
 
 ## Quick Start
@@ -216,12 +217,10 @@ frontend/
 │   ├── App.tsx              # Main component
 │   ├── components/          # React components
 │   └── hooks/               # Custom hooks
+├── Dockerfile               # Frontend container image
+├── railway.json             # Railway deployment config
 ├── package.json
 └── vite.config.ts
-
-docker/
-├── Dockerfile.backend       # Python services
-└── Dockerfile.frontend      # React app
 ```
 
 ## Configuration
@@ -274,10 +273,10 @@ The project is configured for easy deployment to Railway, Render, or similar pla
 
 **Services to deploy:**
 1. **Redis** - Use managed Redis service
-2. **Orchestrator** - Deploy backend/ with `docker/Dockerfile.backend`
-3. **Frontend** - Deploy frontend/ with `docker/Dockerfile.frontend`
+2. **Orchestrator** - Deploy with root directory `/backend` using `backend/Dockerfile`
+3. **Frontend** - Deploy with root directory `/frontend` using `frontend/Dockerfile`
 
-Set environment variables in platform dashboard.
+Set environment variables in platform dashboard. See `RAILWAY_DEPLOYMENT.md` for detailed Railway setup instructions.
 
 ## Monitoring & Logs
 

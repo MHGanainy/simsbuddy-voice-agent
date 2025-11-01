@@ -198,7 +198,7 @@ railway service orchestrator
    - **Name**: `frontend`
    - **Branch**: `staging`
    - **Root Directory**: `/frontend`
-   - **Dockerfile Path**: `../docker/Dockerfile.frontend`
+   - **Dockerfile Path**: `Dockerfile`
 
 ### Link Existing Redis
 

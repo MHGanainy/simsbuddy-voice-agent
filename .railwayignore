@@ -61,6 +61,7 @@ logs/
 htmlcov/
 test-results/
 
-# Docker (exclude docker-compose only, keep everything else)
+# Docker (exclude docker-compose and docker/ directory)
 docker-compose.yml
-# Root Dockerfile will be used for Railway build
+docker/
+# Each service uses its own Dockerfile: backend/Dockerfile and frontend/Dockerfile
