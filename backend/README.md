@@ -6,12 +6,17 @@ This directory contains the Python backend services for the LiveKit voice assist
 
 ```
 backend/
-├── orchestrator/       # FastAPI server + Celery workers for session orchestration
+├── common/            # Shared utilities
+│   ├── __init__.py
+│   └── logging_config.py # Structured logging (console/JSON)
+├── orchestrator/      # FastAPI server + Celery workers for session orchestration
 │   ├── main.py        # FastAPI app - REST API for sessions and LiveKit tokens
 │   ├── tasks.py       # Celery tasks - agent spawning, pool management, cleanup
 │   └── celeryconfig.py # Celery configuration
-└── agent/             # Voice assistant bot (Pipecat + LiveKit)
-    └── voice_assistant.py  # Voice agent implementation
+├── agent/             # Voice assistant bot (Pipecat + LiveKit)
+│   └── voice_assistant.py # Voice agent implementation
+├── Dockerfile         # Backend container image (multi-process)
+└── supervisord.conf   # Process manager for Railway (PORT-aware)
 ```
 
 ## Components
@@ -298,13 +303,82 @@ Check `/stats` endpoint for:
 - Redis connection status
 - Agent process counts
 
+## Docker Deployment
+
+### Local Development (docker-compose)
+
+From the project root:
+
+```bash
+# Start all services
+docker-compose up --build
+
+# Or use Makefile
+make dev       # Development mode with logs
+make up        # Detached mode
+make down      # Stop services
+make logs      # View logs
+```
+
+### Docker Build Details
+
+The backend Dockerfile:
+
+1. **Base Image**: `python:3.11-slim`
+2. **System Dependencies**: ffmpeg, supervisor, curl
+3. **Python Dependencies**: Installed in layers for caching:
+   - Shared dependencies (`backend/requirements.txt`)
+   - Orchestrator dependencies (`backend/orchestrator/requirements.txt`)
+   - Agent dependencies (`backend/agent/requirements.txt`)
+4. **Process Manager**: Supervisord runs 3 processes:
+   - FastAPI (uvicorn)
+   - Celery worker
+   - Celery beat
+
+**Build Context**: Repository root (`.`) - this allows the Dockerfile to copy from `backend/` subdirectory.
+
+```bash
+# Manual build from project root
+docker build -f backend/Dockerfile -t backend:latest .
+
+# Run container
+docker run -p 8000:8000 \
+  -e PORT=8000 \
+  -e REDIS_URL=redis://localhost:6379/0 \
+  -e LIVEKIT_URL=wss://... \
+  # ... other env vars
+  backend:latest
+```
+
+### Railway Deployment
+
+**Configuration:**
+- Root Directory: `/`
+- Dockerfile Path: `/backend/Dockerfile`
+- Builder: Dockerfile
+
+**Environment Variables:**
+Set all required variables from `.env.railway.example`:
+- LiveKit credentials (LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+- AI service keys (GROQ_API_KEY, ASSEMBLY_API_KEY, INWORLD_API_KEY)
+- Redis URL from Railway Redis service
+- PORT is automatically injected by Railway
+
+**Process Management:**
+- Supervisord manages all 3 processes (FastAPI, Celery worker, Celery beat)
+- `backend/supervisord.conf` uses `%(ENV_PORT)s` to work with Railway's injected PORT
+- Logs are sent to stdout/stderr for Railway visibility
+
+See `../RAILWAY_DEPLOYMENT.md` for complete setup guide.
+
 ## Production Deployment
 
-See root `README.md` for deployment instructions.
-
 Key considerations:
-- Set appropriate `MAX_BOTS` based on server capacity
-- Configure `PREWARM_POOL_SIZE` based on expected traffic
-- Monitor Redis memory usage
+- Set appropriate `MAX_BOTS` based on server capacity (default: 50)
+- Configure `PREWARM_POOL_SIZE` based on expected traffic (default: 3)
+- Monitor Redis memory usage and set appropriate maxmemory policy
 - Use process manager (supervisor) for resilience
-- Implement proper logging and monitoring
+- Implement proper logging (JSON format for production: `LOG_FORMAT=json`)
+- Configure log aggregation (Railway automatically captures stdout/stderr)
+- Set up health check monitoring (`/health` endpoint)
+- Use managed Redis service (e.g., Railway Redis) with persistence enabled

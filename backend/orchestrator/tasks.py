@@ -341,12 +341,12 @@ def health_check_agents():
         # Get all session keys (only direct session hashes, not user mappings)
         all_keys = redis_client.keys('session:*')
 
-        # Filter to only get session hashes, not user mapping strings
+        # Filter to only get session hashes, not user mapping strings or sets
         session_keys = []
         for key in all_keys:
             key_str = key.decode() if isinstance(key, bytes) else key
-            # Skip session:user:* keys (user ID mappings)
-            if ':user:' not in key_str:
+            # Skip session:user:* keys (user ID mappings) and session:ready (set)
+            if ':user:' not in key_str and key_str != 'session:ready':
                 session_keys.append(key_str)
 
         for key_str in session_keys:
@@ -420,7 +420,8 @@ def cleanup_stale_agents():
         for key in session_keys:
             key_str = key.decode() if isinstance(key, bytes) else key
 
-            if ':user:' in key_str:
+            # Skip session:user:* keys (user ID mappings) and session:ready (set)
+            if ':user:' in key_str or key_str == 'session:ready':
                 continue
 
             session_id = key_str.split(':')[1]
@@ -494,10 +495,11 @@ def cleanup_stale_agents():
 
 # Beat Schedule Configuration
 app.conf.beat_schedule = {
-    'prewarm-pool-every-30s': {
-        'task': 'prewarm_agent_pool',
-        'schedule': 30.0,  # Every 30 seconds
-    },
+    # Prewarm pool disabled - using on-demand agent creation only
+    # 'prewarm-pool-every-30s': {
+    #     'task': 'prewarm_agent_pool',
+    #     'schedule': 30.0,  # Every 30 seconds
+    # },
     'health-check-every-60s': {
         'task': 'health_check_agents',
         'schedule': 60.0,  # Every 60 seconds

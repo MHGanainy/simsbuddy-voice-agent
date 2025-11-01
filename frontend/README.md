@@ -58,7 +58,15 @@ npm run preview
 
 ## Environment Configuration
 
-Create a `.env` file (optional):
+The frontend requires one environment variable to connect to the backend:
+
+**`VITE_API_URL`** - URL of the backend orchestrator service
+
+### Local Development
+
+The frontend defaults to `http://localhost:8000` if `VITE_API_URL` is not set.
+
+Optionally create a `.env` file:
 
 ```env
 VITE_API_URL=http://localhost:8000
@@ -69,6 +77,18 @@ Or export the variable:
 ```bash
 export VITE_API_URL=http://localhost:8000
 npm run dev
+```
+
+### Railway/Cloud Deployment
+
+Set `VITE_API_URL` in your platform's environment variables:
+
+```bash
+# Railway example
+railway variables set VITE_API_URL=https://your-backend.railway.app
+
+# Or in Railway dashboard:
+# VITE_API_URL=https://your-backend.railway.app
 ```
 
 ## Architecture
@@ -233,15 +253,61 @@ This frontend prioritizes:
 
 ## Docker Deployment
 
+### Local Development (docker-compose)
+
 The frontend is included in the main docker-compose setup:
 
 ```bash
-# Build and run all services
+# From project root
 docker-compose up --build
+
+# Or use Makefile shortcuts
+make dev      # Development mode with logs
+make up       # Detached mode
+make down     # Stop services
+make logs     # View logs
 
 # Frontend will be at http://localhost:3000
 # Backend at http://localhost:8000
 ```
+
+### Docker Build Details
+
+The frontend Dockerfile uses a **multi-stage build**:
+
+1. **Builder stage** (node:18-alpine):
+   - Installs dependencies
+   - Builds production bundle with Vite
+   - Optimizes assets
+
+2. **Production stage** (node:18-alpine):
+   - Serves static files with `serve`
+   - Lightweight runtime (~40MB total)
+   - Listens on port specified by `$PORT` (default: 3000)
+
+**Build Context**: Repository root (`.`) - this allows the Dockerfile to copy from `frontend/` subdirectory.
+
+```bash
+# Manual build from project root
+docker build -f frontend/Dockerfile -t frontend:latest .
+
+# Run container
+docker run -p 3000:3000 \
+  -e VITE_API_URL=http://localhost:8000 \
+  frontend:latest
+```
+
+### Railway Deployment
+
+**Configuration:**
+- Root Directory: `/`
+- Dockerfile Path: `/frontend/Dockerfile`
+- Builder: Dockerfile
+
+**Environment Variables:**
+- `VITE_API_URL` - Set to your backend service URL
+
+See `../RAILWAY_DEPLOYMENT.md` for complete setup guide.
 
 ## License
 

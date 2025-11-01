@@ -22,11 +22,14 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: docker/Dockerfile.backend
+      dockerfile: backend/Dockerfile
     container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
     environment:
+      # Port (for supervisor compatibility with Railway)
+      PORT: 8000
+
       # Redis
       REDIS_URL: redis://redis:6379/0
 
@@ -45,8 +48,8 @@ services:
       SESSION_TIMEOUT: 1800000
       BOT_STARTUP_TIMEOUT: 30
 
-      # Pre-warm pool config
-      PREWARM_POOL_SIZE: 3
+      # Pre-warm pool config (0 = on-demand only, no prewarm)
+      PREWARM_POOL_SIZE: 0
 
       # Python script path (updated for new structure)
       PYTHON_SCRIPT_PATH: /app/backend/agent/voice_assistant.py
@@ -80,17 +83,15 @@ services:
   # Frontend - React application (simplified dev interface)
   frontend:
     build:
-      context: ./frontend
-      dockerfile: ../docker/Dockerfile.frontend
+      context: .
+      dockerfile: frontend/Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-        VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     container_name: voice-agent-frontend
     ports:
       - "3000:3000"
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-      VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     depends_on:
       - orchestrator
     networks:

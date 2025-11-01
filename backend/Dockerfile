@@ -1,3 +1,4 @@
+# Backend Orchestrator Dockerfile - Railway Compatible
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -20,19 +21,19 @@ RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
 COPY backend/agent/requirements.txt /app/backend/agent/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/agent/requirements.txt
 
-# Copy entire backend codebase
+# Copy entire backend codebase to /app/backend (consistent with docker-compose volume mount)
 COPY backend/ /app/backend/
 
 # Copy supervisor configuration
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY backend/supervisord.conf /app/supervisord.conf
 
-# Create log directories
-RUN mkdir -p /var/log/supervisor
+# Create log directories (use /tmp for Railway ephemeral storage)
+RUN mkdir -p /tmp/supervisor
 
 # Set working directory to orchestrator (for uvicorn and celery commands)
 WORKDIR /app/backend/orchestrator
 
-# Expose FastAPI port
+# Expose port (Railway will inject $PORT at runtime)
 EXPOSE 8000
 
 # Environment variables
@@ -42,4 +43,4 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHON_SCRIPT_PATH=/app/backend/agent/voice_assistant.py
 
 # Start supervisor (runs FastAPI + Celery worker + Celery beat)
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]

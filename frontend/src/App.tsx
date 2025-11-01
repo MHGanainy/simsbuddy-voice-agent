@@ -44,6 +44,18 @@ export default function App() {
     logger.info('Starting session...', { voiceSettings });
 
     try {
+      // Request microphone permission BEFORE starting session
+      logger.info('Requesting microphone permission...');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Stop the stream immediately - we just needed to get permission
+        stream.getTracks().forEach(track => track.stop());
+        logger.info('Microphone permission granted');
+      } catch (permError) {
+        logger.error('Microphone permission denied', { error: permError });
+        throw new Error('Microphone access is required. Please grant permission and try again.');
+      }
+
       const response = await fetch(`${API_URL}/orchestrator/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
