@@ -2,11 +2,12 @@
 # Backend Orchestrator Service
 
 [phases.setup]
-nixPkgs = ["python311", "nodejs_20", "ffmpeg-full", "supervisor"]
+nixPkgs = ["python311", "nodejs_20", "ffmpeg-full"]
 
 [phases.install]
 cmds = [
     "pip install --upgrade pip setuptools wheel",
+    "pip install supervisor",
     "pip install -r backend/requirements.txt",
     "pip install -r backend/orchestrator/requirements.txt",
     "pip install -r backend/agent/requirements.txt"
