@@ -3,10 +3,10 @@ FROM node:18-alpine as builder
 
 # Build stage
 WORKDIR /app
-COPY voice-assistant-project/livekit-react-app/package*.json ./
-RUN npm ci
+COPY package*.json ./
+RUN npm install
 
-COPY voice-assistant-project/livekit-react-app/ .
+COPY . .
 RUN npm run build
 
 # Production stage
@@ -19,9 +19,6 @@ WORKDIR /app
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./
-
-# Copy environment file if exists
-COPY voice-assistant-project/livekit-react-app/.env* ./
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

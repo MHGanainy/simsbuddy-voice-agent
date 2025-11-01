@@ -1,0 +1,5 @@
+# Shared dependencies across backend services
+python-dotenv
+loguru
+aiohttp
+redis==5.0.1

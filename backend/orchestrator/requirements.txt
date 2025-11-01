@@ -1,0 +1,5 @@
+# Orchestrator-specific dependencies (FastAPI server + Celery workers)
+celery==5.3.4
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+livekit-api

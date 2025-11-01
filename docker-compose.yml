@@ -1,51 +1,94 @@
 version: '3.8'
 
 services:
-  # Core Service 1: Orchestrator (Required)
+  # Redis - Message broker and state store
+  redis:
+    image: redis:7-alpine
+    container_name: voice-agent-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - voice-agent-network
+
+  # Orchestrator - Runs FastAPI + Celery worker + Celery beat via Supervisor
   orchestrator:
     build:
       context: .
-      dockerfile: Dockerfile.orchestrator
-    container_name: bot-orchestrator
+      dockerfile: docker/Dockerfile.backend
+    container_name: voice-agent-orchestrator
     ports:
-      - "8080:8080"
+      - "8000:8000"
     environment:
-      # LiveKit Cloud - Set in .env file or pass as environment variables
-      - LIVEKIT_URL=${LIVEKIT_URL}
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      # AI Services - Set in .env file or pass as environment variables
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - ASSEMBLY_API_KEY=${ASSEMBLY_API_KEY}
-      - INWORLD_API_KEY=${INWORLD_API_KEY}
-      # Configuration
-      - MAX_BOTS=5
-      - SESSION_TIMEOUT=1800000
-      - PORT=8080
-    volumes:
-      - ./voice-assistant-project/voice_assistant.py:/app/bot/voice_assistant.py:ro
-      - ./voice-assistant-project/.env:/app/bot/.env:ro
-    networks:
-      - voice-assistant-network
-    restart: unless-stopped
+      # Redis
+      REDIS_URL: redis://redis:6379/0
 
-  # Core Service 2: Frontend (Required)
+      # LiveKit credentials
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+
+      # AI Service API Keys
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
+      INWORLD_API_KEY: ${INWORLD_API_KEY}
+
+      # Orchestrator config
+      MAX_BOTS: 50
+      SESSION_TIMEOUT: 1800000
+      BOT_STARTUP_TIMEOUT: 30
+
+      # Pre-warm pool config
+      PREWARM_POOL_SIZE: 3
+
+      # Python script path (updated for new structure)
+      PYTHON_SCRIPT_PATH: /app/backend/agent/voice_assistant.py
+
+      # Python path for absolute imports
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount for development (comment out for production)
+      - ./backend:/app/backend
+    networks:
+      - voice-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend - React application
   frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: voice-assistant-frontend
+      context: ./frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    container_name: voice-agent-frontend
     ports:
       - "3000:3000"
     environment:
-      - VITE_LIVEKIT_URL=${LIVEKIT_URL}
-      - VITE_TOKEN_ENDPOINT=http://localhost:8080/api/token
+      VITE_API_URL: http://localhost:8000
     depends_on:
       - orchestrator
     networks:
-      - voice-assistant-network
+      - voice-agent-network
     restart: unless-stopped
 
+volumes:
+  redis-data:
+    driver: local
+
 networks:
-  voice-assistant-network:
+  voice-agent-network:
     driver: bridge

@@ -19,13 +19,13 @@ import signal
 
 # Initialize Celery
 app = Celery('voice_agent_tasks')
-app.config_from_object('celeryconfig')
+app.config_from_object('backend.orchestrator.celeryconfig')
 
 # Redis client
 redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
 
 # Configuration
-PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/voice_assistant.py')
+PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_assistant.py')
 BOT_STARTUP_TIMEOUT = int(os.getenv('BOT_STARTUP_TIMEOUT', 30))  # Increased for ML model loading
 PREWARM_POOL_SIZE = int(os.getenv('PREWARM_POOL_SIZE', 3))
 MAX_LOG_ENTRIES = 100
@@ -81,7 +81,7 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
             'userId': user_id or '',
             'voiceId': voice_id,
             'createdAt': int(time.time()),
-            'taskId': task_id
+            'celeryTaskId': task_id
         })
         redis_client.sadd('session:starting', session_id)
 
@@ -104,7 +104,11 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
         )
 
         pid = process.pid
-        redis_client.set(f'agent:{session_id}:pid', pid)
+
+        # Store PID in both locations immediately for cleanup access
+        redis_client.set(f'agent:{session_id}:pid', pid, ex=7200)  # 2 hour TTL
+        redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+
         print(f"[Task {task_id}] Process spawned with PID: {pid}")
 
         # Monitor stdout for connection success (stderr is redirected to stdout)
