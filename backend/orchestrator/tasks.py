@@ -111,27 +111,27 @@ def spawn_voice_agent(self, session_id, user_id=None):
         try:
             logger.info("agent_spawn_started")
 
-            # Fetch user configuration if user_id is provided
+            # Fetch session configuration from Redis
+            # Changed from user-based to session-based to support multiple concurrent sessions per user
             voice_id = 'Ashley'  # Default voice
             opening_line = None
             system_prompt = None
 
-            if user_id:
-                try:
-                    config_key = f'user:{user_id}:config'
-                    config = redis_client.hgetall(config_key)
-                    if config and b'voiceId' in config:
-                        voice_id = config[b'voiceId'].decode('utf-8')
-                        if b'openingLine' in config:
-                            opening_line = config[b'openingLine'].decode('utf-8')
-                        if b'systemPrompt' in config:
-                            system_prompt = config[b'systemPrompt'].decode('utf-8')
-                        logger.info("user_config_loaded",
-                                   voice_id=voice_id,
-                                   opening_line_preview=opening_line[:50] if opening_line else 'default',
-                                   system_prompt_preview=system_prompt[:50] if system_prompt else 'default')
-                except Exception as e:
-                    logger.warning("user_config_load_failed", error=str(e), fallback="defaults")
+            try:
+                config_key = f'session:{session_id}:config'
+                config = redis_client.hgetall(config_key)
+                if config and b'voiceId' in config:
+                    voice_id = config[b'voiceId'].decode('utf-8')
+                    if b'openingLine' in config:
+                        opening_line = config[b'openingLine'].decode('utf-8')
+                    if b'systemPrompt' in config:
+                        system_prompt = config[b'systemPrompt'].decode('utf-8')
+                    logger.info("session_config_loaded",
+                               voice_id=voice_id,
+                               opening_line_preview=opening_line[:50] if opening_line else 'default',
+                               system_prompt_preview=system_prompt[:50] if system_prompt else 'default')
+            except Exception as e:
+                logger.warning("session_config_load_failed", error=str(e), fallback="defaults")
 
             # Update session status
             redis_client.hset(f'session:{session_id}', mapping={
@@ -449,6 +449,7 @@ def cleanup_stale_agents():
                 # Clean up Redis keys
                 user_id = session_data.get('userId')
                 redis_client.delete(f'session:{session_id}')
+                redis_client.delete(f'session:{session_id}:config')  # Session-based config
                 redis_client.delete(f'agent:{session_id}:pid')
                 redis_client.delete(f'agent:{session_id}:logs')
                 redis_client.delete(f'agent:{session_id}:logfile')

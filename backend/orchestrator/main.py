@@ -70,6 +70,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Voice configuration - must match backend/agent/voice_assistant.py VOICE_SPEED_OVERRIDES
+VALID_VOICES = ["Ashley", "Craig", "Edward", "Olivia", "Wendy", "Priya"]
+
 # Request/Response models
 class SessionStartRequest(BaseModel):
     userName: str
@@ -294,6 +297,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             # Delete session keys
             keys_to_delete = [
                 f"session:{session_id}",
+                f"session:{session_id}:config",  # Session-based config
                 f"agent:{session_id}:pid",
                 f"agent:{session_id}:logs",
                 f"agent:{session_id}:health",
@@ -369,10 +373,23 @@ async def start_session(request: SessionStartRequest):
         else:
             session_id = generate_session_id()
 
+        # Validate and normalize voice ID
+        requested_voice = request.voiceId or "Ashley"
+        if requested_voice not in VALID_VOICES:
+            logger.warning("invalid_voice_requested",
+                          requested_voice=requested_voice,
+                          valid_voices=VALID_VOICES,
+                          fallback="Ashley")
+            voice_id = "Ashley"
+        else:
+            voice_id = requested_voice
+
         # Use LogContext for request correlation
         with LogContext(session_id=session_id, user_name=request.userName):
             logger.info("session_start_requested",
-                       voice_id=request.voiceId or 'Ashley',
+                       voice_id=voice_id,
+                       voice_requested=requested_voice,
+                       voice_validated=voice_id == requested_voice,
                        opening_line=request.openingLine or 'default')
 
             # Generate LiveKit token
@@ -385,24 +402,34 @@ async def start_session(request: SessionStartRequest):
                     detail=f"LiveKit token generation failed: {str(e)}"
                 )
 
-        # Store user config in Redis (for voice customization)
+        # Store session config in Redis (for voice customization)
+        # Use session-based storage so multiple sessions from same user don't conflict
         try:
-            if request.voiceId or request.openingLine or request.systemPrompt:
-                config_key = f"user:{request.userName}:config"
-                config_data = {}
-                if request.voiceId:
-                    config_data['voiceId'] = request.voiceId
-                if request.openingLine:
-                    config_data['openingLine'] = request.openingLine
-                if request.systemPrompt:
-                    config_data['systemPrompt'] = request.systemPrompt
-                config_data['updatedAt'] = str(int(time.time()))
+            config_key = f"session:{session_id}:config"
+            config_data = {
+                'voiceId': voice_id,  # Use validated voice_id
+                'userName': request.userName,
+                'updatedAt': str(int(time.time()))
+            }
 
-                redis_client.hset(config_key, mapping=config_data)
-                logger.info("user_config_stored", user_name=request.userName, config=config_data)
+            if request.openingLine:
+                config_data['openingLine'] = request.openingLine
+            if request.systemPrompt:
+                config_data['systemPrompt'] = request.systemPrompt
+
+            redis_client.hset(config_key, mapping=config_data)
+            redis_client.expire(config_key, 14400)  # 4 hour TTL same as session
+            logger.info("session_config_stored",
+                       session_id=session_id,
+                       user_name=request.userName,
+                       voice_id=voice_id,
+                       config_keys=list(config_data.keys()))
         except Exception as e:
             # Non-fatal, just log
-            logger.warning("user_config_store_failed", user_name=request.userName, error=str(e))
+            logger.warning("session_config_store_failed",
+                          session_id=session_id,
+                          user_name=request.userName,
+                          error=str(e))
 
         # Trigger Celery task to spawn voice agent
         try:
