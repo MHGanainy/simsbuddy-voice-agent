@@ -33,10 +33,16 @@ export default function VoiceSettings({ settings, onSettingsChange }: VoiceSetti
     onSettingsChange({ ...settings, openingLine: newLine });
   };
 
+  const handleSystemPromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newPrompt = e.target.value;
+    onSettingsChange({ ...settings, systemPrompt: newPrompt });
+  };
+
   const handleReset = () => {
     const defaults: VoiceSettingsType = {
       voiceId: 'Ashley',
-      openingLine: 'Hello! How can I help you today?'
+      openingLine: 'Hello! How can I help you today?',
+      systemPrompt: ''
     };
     logger.info('Voice settings reset to defaults');
     onSettingsChange(defaults);
@@ -77,6 +83,24 @@ export default function VoiceSettings({ settings, onSettingsChange }: VoiceSetti
             />
             <span className="voice-settings-hint">
               {settings.openingLine.length}/500 characters
+            </span>
+          </div>
+
+          <div className="voice-settings-field">
+            <label htmlFor="system-prompt">
+              System Prompt:
+              <span className="voice-settings-optional"> (optional)</span>
+            </label>
+            <textarea
+              id="system-prompt"
+              value={settings.systemPrompt || ''}
+              onChange={handleSystemPromptChange}
+              placeholder="You are a helpful AI assistant. Customize the AI's personality and behavior here..."
+              maxLength={2000}
+              rows={4}
+            />
+            <span className="voice-settings-hint">
+              {(settings.systemPrompt || '').length}/2000 characters - Leave empty to use default
             </span>
           </div>
 

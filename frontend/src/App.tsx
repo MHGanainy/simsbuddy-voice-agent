@@ -30,7 +30,8 @@ export default function App() {
 
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettingsType>({
     voiceId: 'Ashley',
-    openingLine: 'Hello! How can I help you today?'
+    openingLine: 'Hello! How can I help you today?',
+    systemPrompt: ''
   });
 
   useEffect(() => {
@@ -62,7 +63,8 @@ export default function App() {
         body: JSON.stringify({
           userName: `user_${Date.now()}`,
           voiceId: voiceSettings.voiceId,
-          openingLine: voiceSettings.openingLine
+          openingLine: voiceSettings.openingLine,
+          ...(voiceSettings.systemPrompt && { systemPrompt: voiceSettings.systemPrompt })
         })
       });
 

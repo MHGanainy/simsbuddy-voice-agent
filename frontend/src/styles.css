@@ -176,12 +176,25 @@ button.large {
 }
 
 .voice-settings-field select,
-.voice-settings-field input[type="text"] {
+.voice-settings-field input[type="text"],
+.voice-settings-field textarea {
   width: 100%;
   padding: 0.5rem;
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.voice-settings-field textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.voice-settings-optional {
+  font-weight: 400;
+  color: #999;
+  font-size: 0.85rem;
 }
 
 .voice-settings-hint {
