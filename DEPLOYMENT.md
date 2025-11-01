@@ -106,7 +106,6 @@ railway variables set PYTHON_SCRIPT_PATH="/app/backend/agent/voice_assistant.py"
 railway variables set MAX_BOTS="50"
 railway variables set SESSION_TIMEOUT="1800000"
 railway variables set BOT_STARTUP_TIMEOUT="30"
-railway variables set PREWARM_POOL_SIZE="3"
 ```
 
 Or copy from `.env.railway.example` and set via Railway dashboard.
@@ -258,7 +257,6 @@ Adjust for production:
 ```bash
 railway variables set LOG_LEVEL="WARN"
 railway variables set MAX_BOTS="100"
-railway variables set PREWARM_POOL_SIZE="5"
 ```
 
 ### 3. Configure Auto-Deploy

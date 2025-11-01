@@ -44,7 +44,6 @@ PYTHON_SCRIPT_PATH=/app/backend/agent/voice_assistant.py
 MAX_BOTS=50                       # Max concurrent voice agents
 SESSION_TIMEOUT=1800000           # Session timeout in ms (30 min)
 BOT_STARTUP_TIMEOUT=30            # Agent startup timeout (seconds)
-PREWARM_POOL_SIZE=3               # Pre-warmed agents for fast connections
 
 # Port (Railway auto-injects this)
 PORT=8000                         # FastAPI server port
@@ -243,7 +242,6 @@ voice_id = "Edward"  # or "Olivia"
 LOG_FORMAT=json                    # Structured logs
 LOG_LEVEL=WARN                     # Less verbose
 MAX_BOTS=100                       # Higher capacity
-PREWARM_POOL_SIZE=5                # More pre-warmed agents
 ```
 
 ## Configuration by Environment
@@ -254,7 +252,6 @@ PREWARM_POOL_SIZE=5                # More pre-warmed agents
 LOG_LEVEL=DEBUG
 LOG_FORMAT=console
 MAX_BOTS=10
-PREWARM_POOL_SIZE=1
 REDIS_URL=redis://localhost:6379/0
 ```
 
@@ -264,7 +261,6 @@ REDIS_URL=redis://localhost:6379/0
 LOG_LEVEL=INFO
 LOG_FORMAT=json
 MAX_BOTS=50
-PREWARM_POOL_SIZE=3
 REDIS_URL=redis://default:password@railway:6379
 ```
 
@@ -274,7 +270,6 @@ REDIS_URL=redis://default:password@railway:6379
 LOG_LEVEL=WARN
 LOG_FORMAT=json
 MAX_BOTS=100
-PREWARM_POOL_SIZE=5
 REDIS_URL=redis://default:password@railway:6379
 ```
 

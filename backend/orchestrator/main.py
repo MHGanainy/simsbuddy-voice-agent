@@ -307,7 +307,6 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             # Remove from sets
             redis_client.srem('session:ready', session_id)
             redis_client.srem('session:starting', session_id)
-            redis_client.srem('pool:ready', session_id)
 
             cleanup_details["redis_cleaned"] = True
             logger.info("cleanup_redis_cleaned", session_id=session_id, keys_deleted=len(keys_to_delete))
@@ -404,8 +403,7 @@ async def start_session(request: SessionStartRequest):
         try:
             task = spawn_voice_agent.delay(
                 session_id=session_id,
-                user_id=request.userName,
-                prewarm=False
+                user_id=request.userName
             )
             task_id = task.id
             logger.info("celery_task_queued", task_id=task_id)

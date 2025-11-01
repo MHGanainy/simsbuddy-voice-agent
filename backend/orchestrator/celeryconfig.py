@@ -58,12 +58,6 @@ beat_max_loop_interval = 10  # Check for new tasks every 10 seconds
 # Ignore result for these tasks (reduces Redis memory usage)
 task_ignore_result = False  # We want results for debugging
 
-# Task routes (optional: route specific tasks to specific queues)
-# task_routes = {
-#     'spawn_voice_agent': {'queue': 'spawning'},
-#     'prewarm_agent_pool': {'queue': 'maintenance'},
-# }
-
 # Database settings (optional: use PostgreSQL for result backend at scale)
 # If you need to scale beyond 10k tasks/sec, uncomment:
 # database_url = os.getenv('DATABASE_URL')

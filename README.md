@@ -228,7 +228,6 @@ REDIS_URL=redis://localhost:6379/0
 ```bash
 MAX_BOTS=50                  # Max concurrent agents
 SESSION_TIMEOUT=1800000      # 30 minutes
-PREWARM_POOL_SIZE=3          # Pre-warmed agents
 LOG_LEVEL=INFO               # Logging level
 ```
 
