@@ -68,8 +68,6 @@ services:
     volumes:
       # Mount for development (comment out for production)
       - ./backend:/app/backend
-      # Override supervisord.conf with local version (hardcoded port 8000 for local dev)
-      - ./supervisord.conf:/app/supervisord.conf
       # Voice agent logs (persistent storage)
       - voice-agent-logs:/var/log/voice-agents
     networks:
