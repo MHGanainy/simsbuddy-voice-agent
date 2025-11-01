@@ -76,6 +76,7 @@ class SessionStartRequest(BaseModel):
     voiceId: Optional[str] = "Ashley"
     openingLine: Optional[str] = None
     systemPrompt: Optional[str] = None
+    correlationToken: Optional[str] = None  # External correlation ID for tracking
 
 class SessionStartResponse(BaseModel):
     success: bool
@@ -343,14 +344,14 @@ async def start_session(request: SessionStartRequest):
     Start a voice assistant session
 
     Flow:
-    1. Generate unique session ID
+    1. Generate unique session ID (or use provided correlationToken)
     2. Generate LiveKit access token
     3. Store session state in Redis (with 2-hour TTL)
     4. Trigger Celery task to spawn voice agent
     5. Return token and session info to client
 
     Args:
-        request: SessionStartRequest with userName, voiceId, openingLine
+        request: SessionStartRequest with userName, voiceId, openingLine, correlationToken (optional)
 
     Returns:
         SessionStartResponse with sessionId, token, serverUrl
@@ -361,8 +362,12 @@ async def start_session(request: SessionStartRequest):
     """
     session_id = None
     try:
-        # Generate session ID
-        session_id = generate_session_id()
+        # Use correlation token as session ID if provided, otherwise generate one
+        if request.correlationToken:
+            session_id = request.correlationToken
+            logger.info("session_using_correlation_token", correlation_token=request.correlationToken)
+        else:
+            session_id = generate_session_id()
 
         # Use LogContext for request correlation
         with LogContext(session_id=session_id, user_name=request.userName):
