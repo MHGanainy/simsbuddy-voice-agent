@@ -1,3 +1,4 @@
+# Backend Orchestrator Dockerfile - Railway Compatible
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -9,28 +10,28 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy and install shared dependencies first (for better layer caching)
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy and install orchestrator dependencies
-COPY backend/orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
+COPY orchestrator/requirements.txt ./orchestrator/requirements.txt
+RUN pip install --no-cache-dir -r orchestrator/requirements.txt
 
 # Copy and install agent dependencies (needed for subprocess spawning)
-COPY backend/agent/requirements.txt /app/backend/agent/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/agent/requirements.txt
+COPY agent/requirements.txt ./agent/requirements.txt
+RUN pip install --no-cache-dir -r agent/requirements.txt
 
 # Copy entire backend codebase
-COPY backend/ /app/backend/
+COPY . ./
 
-# Copy supervisor configuration to /app (Railway-compatible path)
+# Copy supervisor configuration (now local to backend/)
 COPY supervisord.conf /app/supervisord.conf
 
 # Create log directories (use /tmp for Railway ephemeral storage)
 RUN mkdir -p /tmp/supervisor
 
 # Set working directory to orchestrator (for uvicorn and celery commands)
-WORKDIR /app/backend/orchestrator
+WORKDIR /app/orchestrator
 
 # Expose port (Railway will inject $PORT at runtime)
 EXPOSE 8000
@@ -39,7 +40,7 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1 \
     C_FORCE_ROOT=true \
     PYTHONPATH=/app \
-    PYTHON_SCRIPT_PATH=/app/backend/agent/voice_assistant.py
+    PYTHON_SCRIPT_PATH=/app/agent/voice_assistant.py
 
 # Start supervisor (runs FastAPI + Celery worker + Celery beat)
 CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]

@@ -1,6 +1,10 @@
 # Railway Backend (Orchestrator) Configuration
 # Service: Voice Agent Orchestrator with FastAPI + Celery + Beat
 
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
 [deploy]
 startCommand = "/usr/bin/supervisord -c /app/supervisord.conf"
 healthcheckPath = "/health"
@@ -10,4 +14,4 @@ restartPolicyMaxRetries = 10
 
 # Railway will automatically inject PORT environment variable
 # Supervisor config must use $PORT for uvicorn
-# Note: Railway will auto-detect Dockerfile in root
+# Note: Set Root Directory to "/backend" in Railway service settings
