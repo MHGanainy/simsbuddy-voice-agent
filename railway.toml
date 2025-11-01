@@ -2,10 +2,11 @@
 # Service: Voice Agent Orchestrator with FastAPI + Celery + Beat
 
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
+dockerfilePath = "docker/Dockerfile.backend"
 
 [deploy]
-startCommand = "supervisord -c /app/supervisord.conf"
+startCommand = "/usr/bin/supervisord -c /app/supervisord.conf"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
