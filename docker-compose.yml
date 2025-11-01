@@ -21,8 +21,8 @@ services:
   # Orchestrator - Runs FastAPI + Celery worker + Celery beat via Supervisor
   orchestrator:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
@@ -68,6 +68,8 @@ services:
     volumes:
       # Mount for development (comment out for production)
       - ./backend:/app/backend
+      # Override supervisord.conf with local version (hardcoded port 8000 for local dev)
+      - ./supervisord.conf:/app/supervisord.conf
       # Voice agent logs (persistent storage)
       - voice-agent-logs:/var/log/voice-agents
     networks:
@@ -83,8 +85,8 @@ services:
   # Frontend - React application (simplified dev interface)
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
         VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}

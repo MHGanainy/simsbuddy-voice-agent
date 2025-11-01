@@ -10,10 +10,11 @@ ARG VITE_ORCHESTRATOR_URL
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_ORCHESTRATOR_URL=$VITE_ORCHESTRATOR_URL
 
-COPY package.json package-lock.json ./
+# Copy from frontend directory (Railway context is repo root)
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY frontend/ ./
 RUN npm run build
 
 # Production stage

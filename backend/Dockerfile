@@ -10,22 +10,22 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy and install shared dependencies first (for better layer caching)
-COPY requirements.txt /app/backend/requirements.txt
+COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy and install orchestrator dependencies
-COPY orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
+COPY backend/orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
 
 # Copy and install agent dependencies (needed for subprocess spawning)
-COPY agent/requirements.txt /app/backend/agent/requirements.txt
+COPY backend/agent/requirements.txt /app/backend/agent/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/agent/requirements.txt
 
 # Copy entire backend codebase to /app/backend (consistent with docker-compose volume mount)
-COPY . /app/backend/
+COPY backend/ /app/backend/
 
 # Copy supervisor configuration
-COPY supervisord.conf /app/supervisord.conf
+COPY backend/supervisord.conf /app/supervisord.conf
 
 # Create log directories (use /tmp for Railway ephemeral storage)
 RUN mkdir -p /tmp/supervisor
