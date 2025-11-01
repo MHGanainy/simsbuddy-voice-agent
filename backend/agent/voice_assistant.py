@@ -6,6 +6,7 @@ import signal
 import argparse
 import math
 import time
+from datetime import datetime
 
 from dotenv import load_dotenv
 import aiohttp
@@ -43,6 +44,10 @@ logger = setup_logging(service_name='voice-agent')
 
 # ==================== AGENT CONFIGURATION ====================
 # Adjust these parameters to tune the voice agent behavior
+
+# Timing Configuration (Development Only)
+ENABLE_TIMING = os.getenv('LOG_LEVEL', 'INFO').upper() == 'DEBUG'
+PARTICIPANT_GREETING_DELAY = 0.2  # Seconds to wait before greeting (reduced from 1.0)
 
 # Context Aggregator Settings
 AGGREGATION_TIMEOUT = 0.2  # How long to wait for complete responses
@@ -140,6 +145,12 @@ def validate_environment():
 validate_environment()
 
 
+def log_timing(message: str, **kwargs):
+    """Log timing information only in development mode"""
+    if ENABLE_TIMING:
+        logger.debug(f"TIMING: {message}", **kwargs)
+
+
 async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     """Main function to run the voice assistant bot.
 
@@ -152,6 +163,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     transport = None
 
     try:
+        startup_time = time.perf_counter() if ENABLE_TIMING else None
+        if ENABLE_TIMING:
+            log_timing("voice_assistant_main_started", timestamp=datetime.utcnow().isoformat())
+
         logger.info("voice_assistant_starting", voice_id=voice_id, opening_line=opening_line)
 
         # Configure LiveKit connection
@@ -336,10 +351,13 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # participant joins.
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant_id):
+            event_start = time.perf_counter() if ENABLE_TIMING else None
+
             try:
                 logger.info("participant_joined", participant_id=participant_id)
 
                 # Track conversation start time (for billing)
+                redis_start = time.perf_counter() if ENABLE_TIMING else None
                 conversation_start_time = int(time.time())
                 try:
                     redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
@@ -347,18 +365,42 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     redis_client.hset(f'session:{room_name}',
                                      'conversationStartTime',
                                      conversation_start_time)
+                    if ENABLE_TIMING and redis_start:
+                        log_timing("redis_operation_complete",
+                                 duration_ms=f"{(time.perf_counter() - redis_start) * 1000:.1f}")
                     logger.info("conversation_start_time_tracked", start_time=conversation_start_time)
                 except Exception as redis_error:
                     logger.error("redis_start_time_tracking_failed", error=str(redis_error))
 
-                await asyncio.sleep(1)
+                # Pipeline stabilization delay (reduced from 1.0s to 0.2s)
+                sleep_start = time.perf_counter() if ENABLE_TIMING else None
+
+                await asyncio.sleep(PARTICIPANT_GREETING_DELAY)
+
+                if ENABLE_TIMING and sleep_start:
+                    log_timing("sleep_complete",
+                             duration_ms=f"{(time.perf_counter() - sleep_start) * 1000:.1f}")
 
                 # Use custom opening line or default
                 greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant. How can I help you today?"
 
+                if ENABLE_TIMING:
+                    log_timing("greeting_prepared", greeting_length=len(greeting))
+                    queue_start = time.perf_counter()
+                else:
+                    queue_start = None
+
                 await task.queue_frame(
                     TTSSpeakFrame(greeting)
                 )
+
+                if ENABLE_TIMING and queue_start and event_start:
+                    queue_duration = (time.perf_counter() - queue_start) * 1000
+                    total_duration = (time.perf_counter() - event_start) * 1000
+                    log_timing("opening_line_queued",
+                             queue_duration_ms=f"{queue_duration:.1f}",
+                             total_handler_duration_ms=f"{total_duration:.1f}")
+
                 logger.info("opening_line_sent", greeting_preview=greeting[:50])
             except Exception as e:
                 logger.error("participant_join_handler_error", error=str(e), exc_info=True)
