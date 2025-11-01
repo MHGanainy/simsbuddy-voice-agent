@@ -93,11 +93,11 @@ Collect these API keys (see `.env.railway.example`):
 # Ensure you're in the project root
 cd /path/to/livekit-demo
 
-# Verify Railway config files exist
-ls -la railway.toml nixpacks.toml .railwayignore
+# Verify Dockerfiles exist
+ls -la backend/Dockerfile frontend/Dockerfile
 
-# Verify supervisord is Railway-compatible
-grep "%(ENV_PORT)s" supervisord.conf
+# Verify supervisord is Railway-compatible (uses PORT variable)
+grep "%(ENV_PORT)s" backend/supervisord.conf
 ```
 
 ### Step 2: Login to Railway
@@ -162,31 +162,39 @@ git checkout main
 
 ### Backend Service (Orchestrator)
 
-**Option A: Via Railway Dashboard** (Recommended)
+**Via Railway Dashboard** (Recommended)
 
 1. Go to Railway dashboard → Your Project
 2. Click "New Service"
 3. Select "GitHub Repo"
 4. Choose your repository
 5. Configure service:
-   - **Name**: `orchestrator`
+   - **Name**: `orchestrator` or `backend`
    - **Branch**: `staging`
-   - **Root Directory**: `/`
-   - **Build**: Nixpacks (auto-detected)
-   - **Start Command**: `supervisord -c /app/supervisord.conf`
+   - **Root Directory**: `/` (repository root)
+   - **Builder**: Dockerfile
+   - **Dockerfile Path**: `/backend/Dockerfile`
 
-**Option B: Via CLI**
+**Important Notes:**
+- The Root Directory MUST be `/` (not `/backend`)
+- The Dockerfile Path should be `/backend/Dockerfile` (absolute path from root)
+- Railway will automatically inject the `PORT` environment variable
+- Supervisord will use this PORT to start FastAPI on the correct port
+
+**Via CLI (Alternative):**
 
 ```bash
 # Switch to staging environment
 railway environment staging
 
-# Create service
-railway up
+# Link to your repo
+railway link
 
-# Set service name
-railway service orchestrator
+# Deploy
+railway up
 ```
+
+Then configure Root Directory and Dockerfile Path in the Railway dashboard.
 
 ### Frontend Service
 
@@ -197,8 +205,14 @@ railway service orchestrator
 3. Configure service:
    - **Name**: `frontend`
    - **Branch**: `staging`
-   - **Root Directory**: `/frontend`
-   - **Dockerfile Path**: `Dockerfile`
+   - **Root Directory**: `/` (repository root)
+   - **Builder**: Dockerfile
+   - **Dockerfile Path**: `/frontend/Dockerfile`
+
+**Important Notes:**
+- The Root Directory MUST be `/` (not `/frontend`)
+- The Dockerfile Path should be `/frontend/Dockerfile` (absolute path from root)
+- This ensures the Dockerfile can access `frontend/` subdirectory for copying files
 
 ### Link Existing Redis
 

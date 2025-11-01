@@ -22,14 +22,17 @@ livekit-demo/
 │   │   └── celeryconfig.py   # Celery config
 │   ├── agent/                # Voice assistant bot
 │   │   └── voice_assistant.py # Pipecat bot
+│   ├── common/               # Shared utilities
+│   │   └── logging_config.py # Structured logging
 │   ├── Dockerfile            # Backend container image
-│   ├── railway.toml          # Railway deployment config
-│   └── supervisord.conf      # Process manager config
+│   └── supervisord.conf      # Railway process manager config
 ├── frontend/                  # React application
 │   ├── src/                  # React components
-│   ├── Dockerfile            # Frontend container image
-│   └── railway.json          # Railway deployment config
-└── docker-compose.yml        # Local development orchestration
+│   └── Dockerfile            # Frontend container image
+├── supervisord.conf          # Local dev process manager config
+├── docker-compose.yml        # Local development orchestration
+├── Makefile                  # Development commands
+└── RAILWAY_DEPLOYMENT.md     # Railway deployment guide
 ```
 
 ## Quick Start
@@ -73,6 +76,22 @@ See `.env.example` for all available options.
 
 ### 3. Start Services
 
+Using Makefile (recommended):
+```bash
+# Start all services in development mode
+make dev
+
+# Or start in production mode (detached)
+make up
+
+# Stop all services
+make down
+
+# View logs
+make logs
+```
+
+Or using Docker Compose directly:
 ```bash
 # Start all services (Redis, Orchestrator, Frontend)
 docker-compose up --build
@@ -201,6 +220,11 @@ npm run dev
 backend/
 ├── __init__.py                # Package marker
 ├── requirements.txt           # Shared dependencies
+├── Dockerfile                 # Backend container image
+├── supervisord.conf           # Railway process manager (uses $PORT)
+├── common/
+│   ├── __init__.py
+│   └── logging_config.py     # Structured logging
 ├── orchestrator/
 │   ├── __init__.py
 │   ├── main.py               # FastAPI app
@@ -215,12 +239,15 @@ backend/
 frontend/
 ├── src/
 │   ├── App.tsx              # Main component
-│   ├── components/          # React components
-│   └── hooks/               # Custom hooks
+│   ├── DevTools.tsx         # Development tools
+│   ├── VoiceSettings.tsx    # Voice configuration UI
+│   ├── types.ts             # TypeScript types
+│   ├── logger.ts            # Frontend logging
+│   └── styles.css           # Global styles
 ├── Dockerfile               # Frontend container image
-├── railway.json             # Railway deployment config
 ├── package.json
-└── vite.config.ts
+├── vite.config.ts
+└── README.md                # Frontend-specific docs
 ```
 
 ## Configuration
@@ -272,11 +299,21 @@ docker-compose down -v
 The project is configured for easy deployment to Railway, Render, or similar platforms.
 
 **Services to deploy:**
-1. **Redis** - Use managed Redis service
-2. **Orchestrator** - Deploy with root directory `/backend` using `backend/Dockerfile`
-3. **Frontend** - Deploy with root directory `/frontend` using `frontend/Dockerfile`
+1. **Redis** - Use managed Redis service (or existing Railway Redis)
+2. **Backend Orchestrator** - Configure with:
+   - Root Directory: `/` (repo root)
+   - Dockerfile Path: `/backend/Dockerfile`
+   - Builder: Dockerfile
+3. **Frontend** - Configure with:
+   - Root Directory: `/` (repo root)
+   - Dockerfile Path: `/frontend/Dockerfile`
+   - Builder: Dockerfile
 
-Set environment variables in platform dashboard. See `RAILWAY_DEPLOYMENT.md` for detailed Railway setup instructions.
+**Environment Variables:**
+- **Backend**: Set all variables from `.env.railway.example`
+- **Frontend**: Set `VITE_API_URL` to your backend service URL
+
+See `RAILWAY_DEPLOYMENT.md` for detailed Railway setup instructions and troubleshooting.
 
 ## Monitoring & Logs
 
@@ -326,9 +363,10 @@ Response includes:
 - Verify `__init__.py` files exist in all Python packages
 
 **3. Frontend can't connect to backend**
-- Check `VITE_API_URL` environment variable
+- Check `VITE_API_URL` environment variable (should point to backend URL)
 - Verify orchestrator is running on port 8000
-- Check CORS settings in `main.py`
+- Check CORS settings in `backend/orchestrator/main.py`
+- For Railway: Ensure frontend has `VITE_API_URL` set to backend service URL
 
 **4. LiveKit connection errors**
 - Verify `LIVEKIT_URL` is accessible
