@@ -122,10 +122,12 @@ docker-compose up -d --build
 - Pre-warms agent pool for instant connections
 
 **Agent** - Pipecat-based voice bot
-- AssemblyAI for speech-to-text
-- Groq (Llama) for language model
-- Inworld AI for text-to-speech
+- AssemblyAI for speech-to-text (with configurable STT parameters)
+- Groq (Llama) for language model (with configurable LLM parameters)
+- Inworld AI for text-to-speech (with voice-specific speed optimization)
 - Smart turn detection for natural conversations
+- **Centralized configuration section** for all agent parameters
+- **Critical rules** automatically appended to all system prompts
 
 ### Frontend (Port 3000)
 
@@ -345,10 +347,22 @@ frontend/
 
 ### Voice Configuration
 
-Available voices (Inworld AI):
-- `inworld-male-1` - Default male voice
-- `inworld-female-1` - Default female voice
-- Custom voices from Inworld AI workspace
+Available voices (Inworld AI) with speed optimization:
+- `Ashley` - Default voice (Female, 1.0x speed)
+- `Craig` - Professional male (1.2x speed)
+- `Edward` - Smooth, natural male (1.0x speed)
+- `Olivia` - Clear, professional female (1.0x speed)
+- `Wendy` - Energetic female (1.2x speed)
+- `Priya` - Asian accent female (1.0x speed)
+
+**Agent Configuration:**
+All voice parameters are centralized in `backend/agent/voice_assistant.py` (lines 44-115) for easy tuning:
+- Voice-specific speed overrides
+- TTS temperature and streaming settings
+- STT parameters (AssemblyAI)
+- LLM parameters (Groq)
+- Context aggregator timeouts
+- Critical rules (automatically appended to all system prompts)
 
 ## Deployment
 

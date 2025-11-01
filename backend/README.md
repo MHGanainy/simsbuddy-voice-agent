@@ -49,11 +49,21 @@ backend/
 
 **Voice Assistant (`voice_assistant.py`)**
 - Pipecat-based voice bot using LiveKit transport
-- Speech-to-Text: AssemblyAI
-- LLM: Groq (Llama models)
-- Text-to-Speech: Inworld AI
+- Speech-to-Text: AssemblyAI (fully configurable with 12 parameters)
+- LLM: Groq (Llama models, configurable with 7 parameters)
+- Text-to-Speech: Inworld AI (voice-specific speed optimization)
 - Smart turn detection for natural conversations
 - Graceful shutdown handling
+- **Centralized configuration section** (lines 44-115) for all agent parameters
+- **Critical rules** automatically appended to all system prompts
+
+**Agent Configuration Section:**
+Located in `voice_assistant.py` lines 44-115, includes:
+- Context Aggregator Settings (timeouts for responses and interruptions)
+- TTS Configuration (streaming, temperature, voice-specific speeds)
+- STT Configuration (AssemblyAI parameters: sample rate, encoding, model, VAD, confidence)
+- LLM Configuration (Groq: model, streaming, tokens, temperature, penalties)
+- Critical Rules (static rules for TTS-friendly responses)
 
 ## API Endpoints
 
@@ -233,6 +243,72 @@ python voice_assistant.py \
   --token "your-access-token" \
   --session-id "test-session"
 ```
+
+## Agent Configuration (v2.1.0)
+
+### Centralized Configuration Section
+
+All agent parameters are now centralized in `voice_assistant.py` (lines 44-115) for easy tuning without code changes:
+
+**Location:** `backend/agent/voice_assistant.py` lines 44-115
+
+**Configuration Categories:**
+
+1. **Context Aggregator Settings**
+   - `AGGREGATION_TIMEOUT = 0.2` - Response completion wait time
+   - `BOT_INTERRUPTION_TIMEOUT = 0.2` - Interruption response time
+
+2. **TTS Configuration (Inworld)**
+   - `TTS_STREAMING = True` - Enable streaming
+   - `TTS_TEMPERATURE = 1.1` - Voice expressiveness (0.0-2.0)
+   - `TTS_DEFAULT_SPEED = 1.0` - Default speech rate
+   - `VOICE_SPEED_OVERRIDES` - Voice-specific speeds:
+     - Craig: 1.2x (faster)
+     - Edward: 1.0x (normal)
+     - Olivia: 1.0x (normal)
+     - Wendy: 1.2x (faster)
+     - Priya: 1.0x (normal)
+     - Ashley: 1.0x (default)
+
+3. **STT Configuration (AssemblyAI)**
+   - Sample rate, encoding, model selection
+   - VAD parameters (confidence, silence thresholds)
+   - Transcript formatting options
+
+4. **LLM Configuration (Groq)**
+   - Model selection (llama-3.3-70b-versatile)
+   - Streaming, max tokens, temperature
+   - Top-p, presence/frequency penalties
+
+5. **Critical Rules** (Static, Non-Negotiable)
+   - Automatically appended to ALL system prompts
+   - Ensures TTS-friendly responses:
+     - No stage directions or actions
+     - Only supported emotion tags
+     - Short, conversational responses (1-2 sentences)
+     - Natural speech without scene descriptions
+
+**Benefits:**
+- Single source of truth for all agent behavior
+- Easy parameter tuning without code changes
+- Consistent configuration across all sessions
+- Well-documented with inline comments
+
+### Critical Rules Enforcement
+
+The `CRITICAL_RULES` constant (lines 90-113) is **automatically appended** to every system prompt, regardless of custom user prompts. This ensures consistent, TTS-friendly responses:
+
+```python
+# In voice_assistant.py
+full_system_prompt = f"{base_prompt}\n\n{CRITICAL_RULES}"
+```
+
+**Rules enforced:**
+- ✅ No stage directions (e.g., "looks anxious")
+- ✅ No actions in asterisks (e.g., *sighs*, *pauses*)
+- ✅ Only supported emotion tags: [happy], [sad], [angry], [surprised], [fearful], [disgusted]
+- ✅ Short responses (1-2 sentences max)
+- ✅ Natural, conversational speech
 
 ## New Features (v2.0.0)
 

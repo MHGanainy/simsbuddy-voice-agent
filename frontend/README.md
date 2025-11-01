@@ -16,8 +16,9 @@ This frontend provides a clean, streamlined interface for testing the voice agen
 - ✅ Session management
 
 ### Voice Customization
-- Simple voice selection dropdown (3 Inworld voices)
+- Simple voice selection dropdown (6 Inworld voices with speed optimization)
 - Custom opening line input
+- Custom system prompt input (for AI personality customization)
 - Reset to defaults button
 
 ### Logging System
@@ -143,13 +144,17 @@ App
 
 1. **(Optional)** Expand Voice Settings panel
 2. **(Optional)** Select a voice from the dropdown:
-   - Alex - Energetic male, mid-range
-   - Ashley - Warm, natural female (default)
-   - Dennis - Smooth, calm male
+   - Ashley (Default) - Warm, natural female (1.0x speed)
+   - Craig (Fast) - Professional male (1.2x speed)
+   - Edward - Smooth, natural male (1.0x speed)
+   - Olivia - Clear, professional female (1.0x speed)
+   - Wendy (Fast) - Energetic female (1.2x speed)
+   - Priya (Asian) - Warm, clear female (1.0x speed)
 3. **(Optional)** Customize the opening line
-4. Click **"Start Session"**
-5. Grant microphone permissions if prompted
-6. Start speaking when "Connected" status appears
+4. **(Optional)** Customize the system prompt (AI personality/behavior)
+5. Click **"Start Session"**
+6. Grant microphone permissions if prompted
+7. Start speaking when "Connected" status appears
 
 ### Using DevTools
 
@@ -211,22 +216,40 @@ docker-compose up orchestrator
 **Error:** `Unknown voice: [voiceId] not found`
 
 **Solution:**
-- Use correct Inworld voice IDs: `Alex`, `Ashley`, or `Dennis`
+- Use correct Inworld voice IDs: `Ashley`, `Craig`, `Edward`, `Olivia`, `Wendy`, or `Priya`
 - Do NOT use prefixes like `inworld-` or `elevenlabs-`
+- Ensure voice is configured in both frontend dropdown and backend `VOICE_SPEED_OVERRIDES`
 
 ## Development
 
 ### Adding More Voices
 
-Edit `src/VoiceSettings.tsx`:
+To add more voices, update both frontend and backend:
 
+**1. Frontend (`src/VoiceSettings.tsx` lines 19-26):**
 ```typescript
 const availableVoices = [
-  { id: 'Alex', name: 'Alex - Energetic male, mid-range' },
-  { id: 'Ashley', name: 'Ashley - Warm, natural female' },
-  { id: 'Dennis', name: 'Dennis - Smooth, calm male' },
-  { id: 'YourVoice', name: 'Your Voice Name' },
+  { id: 'Ashley', name: 'Ashley (Default) - Warm, natural female' },
+  { id: 'Craig', name: 'Craig (Fast) - Professional male' },
+  { id: 'Edward', name: 'Edward - Smooth, natural male' },
+  { id: 'Olivia', name: 'Olivia - Clear, professional female' },
+  { id: 'Wendy', name: 'Wendy (Fast) - Energetic female' },
+  { id: 'Priya', name: 'Priya (Asian) - Warm, clear female' },
+  { id: 'YourVoice', name: 'Your Voice Name' },  // Add here
 ];
+```
+
+**2. Backend (`backend/agent/voice_assistant.py` lines 57-64):**
+```python
+VOICE_SPEED_OVERRIDES = {
+    "Craig": 1.2,
+    "Edward": 1.0,
+    "Olivia": 1.0,
+    "Wendy": 1.2,
+    "Priya": 1.0,
+    "Ashley": 1.0,
+    "YourVoice": 1.0,  # Add here with desired speed
+}
 ```
 
 ### Customizing Logging
