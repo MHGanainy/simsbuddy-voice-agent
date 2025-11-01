@@ -75,6 +75,7 @@ class SessionStartRequest(BaseModel):
     userName: str
     voiceId: Optional[str] = "Ashley"
     openingLine: Optional[str] = None
+    systemPrompt: Optional[str] = None
 
 class SessionStartResponse(BaseModel):
     success: bool
@@ -185,6 +186,8 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         "celery_task_revoked": False,
         "process_killed": False,
         "redis_cleaned": False,
+        "durationSeconds": 0,
+        "durationMinutes": 0,
         "errors": []
     }
 
@@ -197,6 +200,22 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             logger.warning("cleanup_no_session_found", session_id=session_id)
             cleanup_details["errors"].append("Session not found")
             return cleanup_details
+
+        # Extract conversation duration (for billing)
+        try:
+            duration_seconds = session_data.get(b'conversationDuration') or session_data.get('conversationDuration')
+            duration_minutes = session_data.get(b'conversationDurationMinutes') or session_data.get('conversationDurationMinutes')
+
+            if duration_seconds:
+                cleanup_details["durationSeconds"] = int(duration_seconds) if isinstance(duration_seconds, bytes) else int(duration_seconds)
+            if duration_minutes:
+                cleanup_details["durationMinutes"] = int(duration_minutes) if isinstance(duration_minutes, bytes) else int(duration_minutes)
+
+            logger.info("cleanup_duration_extracted",
+                       duration_seconds=cleanup_details["durationSeconds"],
+                       duration_minutes=cleanup_details["durationMinutes"])
+        except Exception as duration_error:
+            logger.warning("cleanup_duration_extraction_failed", error=str(duration_error))
 
         logger.info("cleanup_started", session_id=session_id, session_data=session_data)
 
@@ -345,13 +364,15 @@ async def start_session(request: SessionStartRequest):
 
         # Store user config in Redis (for voice customization)
         try:
-            if request.voiceId or request.openingLine:
+            if request.voiceId or request.openingLine or request.systemPrompt:
                 config_key = f"user:{request.userName}:config"
                 config_data = {}
                 if request.voiceId:
                     config_data['voiceId'] = request.voiceId
                 if request.openingLine:
                     config_data['openingLine'] = request.openingLine
+                if request.systemPrompt:
+                    config_data['systemPrompt'] = request.systemPrompt
                 config_data['updatedAt'] = str(int(time.time()))
 
                 redis_client.hset(config_key, mapping=config_data)
@@ -383,6 +404,7 @@ async def start_session(request: SessionStartRequest):
                 'userName': request.userName,
                 'voiceId': request.voiceId or 'Ashley',
                 'openingLine': request.openingLine or '',
+                'systemPrompt': request.systemPrompt or '',
                 'celeryTaskId': task_id,
                 'status': 'starting',
                 'startTime': str(int(time.time()))

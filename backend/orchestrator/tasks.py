@@ -116,6 +116,7 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
             # Fetch user configuration if user_id is provided
             voice_id = 'Ashley'  # Default voice
             opening_line = None
+            system_prompt = None
 
             if user_id:
                 try:
@@ -125,9 +126,12 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                         voice_id = config[b'voiceId'].decode('utf-8')
                         if b'openingLine' in config:
                             opening_line = config[b'openingLine'].decode('utf-8')
+                        if b'systemPrompt' in config:
+                            system_prompt = config[b'systemPrompt'].decode('utf-8')
                         logger.info("user_config_loaded",
                                    voice_id=voice_id,
-                                   opening_line_preview=opening_line[:50] if opening_line else 'default')
+                                   opening_line_preview=opening_line[:50] if opening_line else 'default',
+                                   system_prompt_preview=system_prompt[:50] if system_prompt else 'default')
                 except Exception as e:
                     logger.warning("user_config_load_failed", error=str(e), fallback="defaults")
 
@@ -145,6 +149,8 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
             cmd = ['python3', PYTHON_SCRIPT_PATH, '--room', session_id, '--voice-id', voice_id]
             if opening_line:
                 cmd.extend(['--opening-line', opening_line])
+            if system_prompt:
+                cmd.extend(['--system-prompt', system_prompt])
 
             # Create log file path for this agent
             log_file_path = os.path.join(AGENT_LOG_DIR, f'{session_id}.log')

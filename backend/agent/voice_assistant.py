@@ -4,9 +4,12 @@ import os
 import sys
 import signal
 import argparse
+import math
+import time
 
 from dotenv import load_dotenv
 import aiohttp
+import redis
 
 # Import structured logging
 from backend.common.logging_config import setup_logging, LogContext
@@ -64,12 +67,13 @@ def validate_environment():
 validate_environment()
 
 
-async def main(voice_id="Ashley", opening_line=None):
+async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     """Main function to run the voice assistant bot.
 
     Args:
         voice_id: The Inworld TTS voice ID to use (default: "Ashley")
         opening_line: Custom opening line to speak when user joins (default: auto-generated)
+        system_prompt: Custom LLM system prompt (default: generic assistant prompt)
     """
     session = None
     transport = None
@@ -156,15 +160,23 @@ async def main(voice_id="Ashley", opening_line=None):
                 raise
 
         # Create conversation context
+        # Use custom system prompt or default
+        default_system_prompt = "You are a helpful AI voice assistant."
+        prompt_to_use = system_prompt or default_system_prompt
+
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful LLM in a WebRTC call. "
-                "Your goal is to demonstrate your capabilities in a succinct way. "
-                "Your output will be converted to audio so don't include special characters in your answers. "
-                "Respond to what the user said in a creative and helpful way.",
+                "content": prompt_to_use,
             },
         ]
+
+        # Add opening line to conversation history so LLM remembers it
+        if opening_line:
+            messages.append({
+                "role": "assistant",
+                "content": opening_line
+            })
 
         context = LLMContext(messages)
         context_aggregator = LLMContextAggregatorPair(context)
@@ -196,6 +208,19 @@ async def main(voice_id="Ashley", opening_line=None):
         async def on_first_participant_joined(transport, participant_id):
             try:
                 logger.info("participant_joined", participant_id=participant_id)
+
+                # Track conversation start time (for billing)
+                conversation_start_time = int(time.time())
+                try:
+                    redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+                    redis_client = redis.from_url(redis_url)
+                    redis_client.hset(f'session:{room_name}',
+                                     'conversationStartTime',
+                                     conversation_start_time)
+                    logger.info("conversation_start_time_tracked", start_time=conversation_start_time)
+                except Exception as redis_error:
+                    logger.error("redis_start_time_tracking_failed", error=str(redis_error))
+
                 await asyncio.sleep(1)
 
                 # Use custom opening line or default
@@ -247,6 +272,29 @@ async def main(voice_id="Ashley", opening_line=None):
         logger.error("fatal_error", error=str(e), exc_info=True)
         raise
     finally:
+        # Track conversation end time and duration (for billing)
+        try:
+            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+            redis_client = redis.from_url(redis_url)
+
+            start_time = redis_client.hget(f'session:{room_name}', 'conversationStartTime')
+            if start_time:
+                start_time = int(start_time)
+                end_time = int(time.time())
+                duration_seconds = end_time - start_time
+                duration_minutes = math.ceil(duration_seconds / 60)  # Round up for billing
+
+                redis_client.hset(f'session:{room_name}', mapping={
+                    'conversationDuration': duration_seconds,
+                    'conversationDurationMinutes': duration_minutes
+                })
+
+                logger.info("conversation_duration_tracked",
+                           duration_seconds=duration_seconds,
+                           duration_minutes=duration_minutes)
+        except Exception as duration_error:
+            logger.error("duration_tracking_failed", error=str(duration_error))
+
         # Clean up resources
         logger.info("cleanup_started")
         if session and not session.closed:
@@ -278,6 +326,8 @@ if __name__ == "__main__":
                         help='Inworld TTS voice ID (default: Ashley)')
     parser.add_argument('--opening-line', type=str, default=None,
                         help='Custom opening line to speak when user joins')
+    parser.add_argument('--system-prompt', type=str, default=None,
+                        help='Custom LLM system prompt (optional)')
     parser.add_argument('--room', type=str, help='LiveKit room name (passed to configure)')
 
     args = parser.parse_args()
@@ -285,7 +335,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main(
             voice_id=args.voice_id,
-            opening_line=args.opening_line
+            opening_line=args.opening_line,
+            system_prompt=args.system_prompt
         ))
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt_shutdown")

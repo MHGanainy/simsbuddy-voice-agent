@@ -41,6 +41,9 @@ backend/
 - Session tracking and cleanup
 - LiveKit webhook validation
 - Agent pool pre-warming
+- **NEW: Dynamic system prompts** per session
+- **NEW: Opening line conversation history** tracking
+- **NEW: Duration tracking** for billing (seconds + minutes)
 
 ### 2. Agent (`backend/agent/`)
 
@@ -72,29 +75,30 @@ Response:
 }
 ```
 
-**POST `/api/session/start`**
-Start a voice assistant session.
+**POST `/orchestrator/session/start`**
+Start a voice assistant session with optional customization.
 ```json
 Request:
 {
-  "sessionId": "session_123",
-  "userId": "user_456",
-  "config": {
-    "voice": "inworld-male-1",
-    "systemPrompt": "You are a helpful assistant..."
-  }
+  "userName": "user_456",
+  "voiceId": "Ashley",                    # Optional (default: "Ashley")
+  "openingLine": "Hello! Welcome!",       # Optional (default: auto-generated)
+  "systemPrompt": "You are a helpful..."  # Optional (default: generic assistant)
 }
 
 Response:
 {
   "success": true,
-  "sessionId": "session_123",
-  "taskId": "celery-task-id"
+  "sessionId": "session_1762018728198_xyz",
+  "token": "eyJhbGc...",
+  "serverUrl": "wss://...",
+  "roomName": "session_1762018728198_xyz",
+  "message": "Session created. Voice agent is being spawned."
 }
 ```
 
-**POST `/api/session/end`**
-End a session and cleanup agent.
+**POST `/orchestrator/session/end`**
+End a session and cleanup agent. Returns conversation duration for billing.
 ```json
 Request:
 {
@@ -104,7 +108,16 @@ Request:
 Response:
 {
   "success": true,
-  "message": "Session ended successfully"
+  "message": "Session session_123 ended and cleaned up",
+  "details": {
+    "session_id": "session_123",
+    "celery_task_revoked": true,
+    "process_killed": true,
+    "redis_cleaned": true,
+    "durationSeconds": 125,        # NEW: Total conversation time in seconds
+    "durationMinutes": 3,           # NEW: Rounded up for billing (math.ceil)
+    "errors": []
+  }
 }
 ```
 
@@ -221,6 +234,75 @@ python voice_assistant.py \
   --session-id "test-session"
 ```
 
+## New Features (v2.0.0)
+
+### 1. Dynamic System Prompts
+
+Allows customization of the LLM's system prompt per session for different AI personalities and behaviors.
+
+**Implementation:**
+- `main.py`: Accepts `systemPrompt` in `SessionStartRequest` model
+- `main.py`: Stores in Redis (`user:{userName}:config` and `session:{sessionId}`)
+- `tasks.py`: Fetches from Redis and passes to agent via command-line arg
+- `voice_assistant.py`: Accepts `--system-prompt` arg and uses in LLM context initialization
+
+**Default:** "You are a helpful AI voice assistant."
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/orchestrator/session/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userName": "user123",
+    "systemPrompt": "You are a technical support agent. Provide clear, step-by-step troubleshooting instructions."
+  }'
+```
+
+### 2. Opening Line in Conversation History
+
+Adds the opening greeting to the LLM's conversation context, ensuring the AI "remembers" what it said.
+
+**Implementation:**
+- `voice_assistant.py:174-179`: Appends opening line to initial messages array
+- LLM sees: `[{role: "system", content: "..."}, {role: "assistant", content: opening_line}]`
+- Pipecat's `LLMContext` maintains this in conversation history
+
+**Benefit:** Users can ask "What did you just say?" and the LLM responds accurately.
+
+**Technical Details:**
+- Opening line passed via `--opening-line` command-line argument
+- Added to context BEFORE first user utterance
+- Persists throughout conversation session
+
+### 3. Conversation Duration Tracking
+
+Tracks conversation time from first participant join to session end for billing and analytics.
+
+**Implementation:**
+- `voice_assistant.py:212-222`: Stores `conversationStartTime` in Redis on first participant join
+- `voice_assistant.py:275-296`: Calculates duration on cleanup (finally block)
+- `main.py:204-218`: Extracts duration from Redis and returns in cleanup response
+- Uses `math.ceil()` to round up minutes for billing
+
+**Redis Fields:**
+- `conversationStartTime` - Unix timestamp (when user joins room)
+- `conversationDuration` - Total seconds
+- `conversationDurationMinutes` - Rounded up minutes (for "1 credit per minute" billing)
+
+**Billing Integration:**
+```python
+# Celery task can read from Redis every 60s for enforcement
+start_time = redis_client.hget(f'session:{session_id}', 'conversationStartTime')
+if start_time and (time.time() - int(start_time)) > user_credit_limit * 60:
+    # Terminate session, user out of credits
+    cleanup_session(session_id)
+```
+
+**Error Handling:**
+- Duration tracking failures logged, don't crash agent
+- Missing start time → duration = 0
+- Redis connection failures handled gracefully
+
 ## Architecture Details
 
 ### Session Flow
@@ -245,11 +327,30 @@ python voice_assistant.py \
 **Session Data:**
 ```
 session:{sessionId} → {
+  "userName": "user_123",
   "userId": "user_123",
+  "voiceId": "Ashley",
+  "openingLine": "Hello! Welcome!",                    # NEW
+  "systemPrompt": "You are a helpful assistant...",    # NEW
   "status": "active",
   "agentPid": 12345,
   "createdAt": 1234567890,
-  "config": {...}
+  "startTime": 1234567890,
+  "conversationStartTime": 1234567900,                 # NEW: First participant join
+  "conversationDuration": 125,                         # NEW: Total seconds
+  "conversationDurationMinutes": 3,                    # NEW: Rounded up for billing
+  "celeryTaskId": "task-id",
+  "logFile": "/var/log/voice-agents/session_xyz.log"
+}
+```
+
+**User Configuration:**
+```
+user:{userName}:config → {
+  "voiceId": "Ashley",
+  "openingLine": "Hello! Welcome!",
+  "systemPrompt": "You are a helpful assistant...",    # NEW
+  "updatedAt": 1234567890
 }
 ```
 
@@ -260,7 +361,14 @@ agent:{sessionId}:pid → "12345"
 
 **Session Logs:**
 ```
-session:{sessionId}:logs → ["log1", "log2", ...]
+agent:{sessionId}:logs → ["log1", "log2", ...]   # List (last 100 entries)
+```
+
+**Session Sets:**
+```
+session:ready → ["session_1", "session_2", ...]       # Ready sessions
+session:starting → ["session_3", ...]                 # Starting sessions
+pool:ready → ["session_4", ...]                       # Pre-warmed agent pool
 ```
 
 ## Troubleshooting

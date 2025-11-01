@@ -7,6 +7,9 @@ Production-ready voice assistant system using LiveKit, Pipecat, and modern AI se
 This is a full-stack voice assistant application featuring:
 - **Real-time voice conversations** using LiveKit WebRTC
 - **AI-powered agent** with Pipecat framework (STT, LLM, TTS)
+- **Dynamic system prompts** for customizable AI personalities per session
+- **Conversation history tracking** with opening line memory
+- **Duration tracking** for billing and analytics (seconds + minutes)
 - **Session orchestration** with FastAPI + Celery
 - **React frontend** for voice configuration and testing
 - **Agent pool management** for instant connections
@@ -150,21 +153,28 @@ POST /api/token
   "userId": "user_456"
 }
 
-# Start voice session
-POST /api/session/start
+# Start voice session (NEW: systemPrompt, openingLine, duration tracking)
+POST /orchestrator/session/start
 {
-  "sessionId": "session_123",
-  "userId": "user_456",
-  "config": {
-    "voice": "inworld-male-1",
-    "systemPrompt": "You are a helpful assistant"
-  }
+  "userName": "user_456",
+  "voiceId": "Ashley",
+  "openingLine": "Hello! I'm your AI assistant.",
+  "systemPrompt": "You are a helpful customer service agent."
 }
 
-# End session
-POST /api/session/end
+# End session (returns duration for billing)
+POST /orchestrator/session/end
 {
   "sessionId": "session_123"
+}
+# Response includes:
+{
+  "success": true,
+  "message": "Session ended and cleaned up",
+  "details": {
+    "durationSeconds": 125,
+    "durationMinutes": 3
+  }
 }
 
 # Health check
@@ -173,6 +183,70 @@ GET /health
 # System stats
 GET /stats
 ```
+
+## New Features (v2.0.0)
+
+### 1. Dynamic System Prompts
+
+Customize the LLM's behavior and personality per session by providing a custom system prompt.
+
+**Usage:**
+```bash
+POST /orchestrator/session/start
+{
+  "userName": "user123",
+  "systemPrompt": "You are a friendly customer service agent for ACME Corp."
+}
+```
+
+**Default:** If not provided, uses: "You are a helpful AI voice assistant."
+
+**Use Cases:**
+- Customer service agents with company-specific instructions
+- Technical support specialists with troubleshooting guidelines
+- Educational tutors with subject-specific teaching styles
+- Sales assistants with product knowledge
+
+### 2. Opening Line in Conversation History
+
+The opening greeting is now added to the LLM's conversation context, ensuring the AI "remembers" what it said when greeting the user.
+
+**Usage:**
+```bash
+POST /orchestrator/session/start
+{
+  "userName": "user123",
+  "openingLine": "Welcome to ACME support! How can I help you today?",
+  "systemPrompt": "You are a support agent. Remember you already greeted the user."
+}
+```
+
+**Benefit:** Users can ask "What did you just say?" and get an accurate response.
+
+### 3. Conversation Duration Tracking
+
+Tracks conversation time from first participant join to session end for billing and analytics.
+
+**Features:**
+- Stores `conversationStartTime` when user joins
+- Calculates duration on session end
+- Returns both seconds and minutes (rounded up for billing)
+- Integrates with Celery for real-time billing enforcement
+
+**Response from `/session/end`:**
+```json
+{
+  "details": {
+    "durationSeconds": 125,
+    "durationMinutes": 3
+  }
+}
+```
+
+**Billing Integration:**
+- Celery can read `conversationStartTime` from Redis every 60s
+- Minutes rounded UP (math.ceil) for "1 credit per minute" model
+- Duration stored in Redis for audit/logging
 
 ## Development
 
