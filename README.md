@@ -1,462 +1,329 @@
-# LiveKit Voice Assistant - Monorepo
+# LiveKit Voice Assistant
 
 Production-ready voice assistant system using LiveKit, Pipecat, and modern AI services.
 
 ## Overview
 
-This is a full-stack voice assistant application featuring:
-- **Real-time voice conversations** using LiveKit WebRTC
-- **AI-powered agent** with Pipecat framework (STT, LLM, TTS)
-- **Session orchestration** with FastAPI + Celery
-- **React frontend** for voice configuration and testing
-- **Agent pool management** for instant connections
+Real-time voice conversations powered by:
+- **LiveKit WebRTC** - Real-time voice infrastructure
+- **Pipecat Framework** - Voice agent orchestration
+- **Dynamic System Prompts** - Customizable AI personalities
+- **Duration Tracking** - Conversation billing/analytics
+- **Agent Pool Management** - Instant connections
 
 ## Architecture
 
 ```
-livekit-demo/
-├── backend/                    # Python services
-│   ├── orchestrator/          # FastAPI + Celery orchestration
-│   │   ├── main.py           # REST API server
-│   │   ├── tasks.py          # Celery workers
-│   │   └── celeryconfig.py   # Celery config
-│   ├── agent/                # Voice assistant bot
-│   │   └── voice_assistant.py # Pipecat bot
-│   ├── common/               # Shared utilities
-│   │   └── logging_config.py # Structured logging
-│   ├── Dockerfile            # Backend container image
-│   └── supervisord.conf      # Railway process manager config
-├── frontend/                  # React application
-│   ├── src/                  # React components
-│   └── Dockerfile            # Frontend container image
-├── supervisord.conf          # Local dev process manager config
-├── docker-compose.yml        # Local development orchestration
-├── Makefile                  # Development commands
-└── RAILWAY_DEPLOYMENT.md     # Railway deployment guide
+Frontend (React) → Orchestrator (FastAPI + Celery) → Voice Agent (Pipecat)
+                            ↓
+                         Redis
 ```
+
+### Components
+
+**Frontend** (`frontend/`)
+- React + Vite + TypeScript
+- LiveKit client for WebRTC
+- Real-time log viewer
+- Voice selection interface
+
+**Orchestrator** (`backend/orchestrator/`)
+- FastAPI REST API (port 8000)
+- Celery workers for session management
+- LiveKit token generation
+- Session lifecycle management
+
+**Voice Agent** (`backend/agent/`)
+- Pipecat pipeline: STT → LLM → TTS
+- AssemblyAI for speech-to-text
+- Groq LLM (llama-3.3-70b-versatile)
+- Inworld for text-to-speech
+- 6 voice options with speed control
+
+**Redis**
+- Session state storage
+- Celery message broker
+- Duration tracking
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
-- LiveKit Cloud account or self-hosted LiveKit server
-- API keys for:
-  - Groq (LLM)
-  - AssemblyAI (STT)
-  - Inworld AI (TTS)
+- API keys: LiveKit, Groq, AssemblyAI, Inworld
 
 ### 1. Clone and Configure
 
 ```bash
 git clone <repository-url>
 cd livekit-demo
+cp .env.example .env
+# Edit .env with your API keys
 ```
 
-### 2. Set Environment Variables
-
-Create `.env` file in the root directory:
+### 2. Start Services
 
 ```bash
-# LiveKit Configuration
-LIVEKIT_URL=wss://your-livekit-server.livekit.cloud
-LIVEKIT_API_KEY=your-api-key
-LIVEKIT_API_SECRET=your-api-secret
-
-# AI Service API Keys
-GROQ_API_KEY=your-groq-api-key
-ASSEMBLY_API_KEY=your-assemblyai-api-key
-INWORLD_API_KEY=your-inworld-api-key
-
-# Redis (auto-configured in docker-compose)
-REDIS_URL=redis://redis:6379/0
-```
-
-See `.env.example` for all available options.
-
-### 3. Start Services
-
-Using Makefile (recommended):
-```bash
-# Start all services in development mode
+# Using Makefile (recommended)
 make dev
 
-# Or start in production mode (detached)
-make up
-
-# Stop all services
-make down
-
-# View logs
-make logs
-```
-
-Or using Docker Compose directly:
-```bash
-# Start all services (Redis, Orchestrator, Frontend)
+# Or Docker Compose
 docker-compose up --build
-
-# Or run in detached mode
-docker-compose up -d --build
 ```
 
-### 4. Access the Application
+### 3. Access
 
 - **Frontend**: http://localhost:3000
 - **API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
 
-## Services
+## Features
 
-### Backend (Port 8000)
+- ✅ Real-time voice conversations via LiveKit
+- ✅ Dynamic system prompts (customize AI behavior per session)
+- ✅ Multiple voices with speed control (Craig, Edward, Olivia, Wendy, Priya, Ashley)
+- ✅ Opening line in conversation context (LLM remembers greeting)
+- ✅ Duration tracking (for billing: seconds + minutes)
+- ✅ Structured logging with session correlation
+- ✅ Async cleanup (non-blocking)
+- ✅ Graceful disconnect handling
 
-**Orchestrator** - FastAPI server with Celery workers
-- Generates LiveKit access tokens
-- Spawns voice agent processes
-- Manages session lifecycle
-- Handles LiveKit webhooks
-- Pre-warms agent pool for instant connections
+## Tech Stack
 
-**Agent** - Pipecat-based voice bot
-- AssemblyAI for speech-to-text
-- Groq (Llama) for language model
-- Inworld AI for text-to-speech
-- Smart turn detection for natural conversations
-
-### Frontend (Port 3000)
-
-React application for:
-- Voice assistant configuration
-- Real-time voice chat interface
-- Session management
-- Voice selection and settings
-
-### Redis (Port 6379)
-
-- Message broker for Celery
-- Session state storage
-- Agent pool tracking
+| Component | Technology |
+|-----------|------------|
+| Frontend  | React + Vite + TypeScript + LiveKit |
+| API       | FastAPI + Pydantic |
+| Workers   | Celery + Celery Beat |
+| Voice AI  | Pipecat framework |
+| STT       | AssemblyAI (universal-streaming) |
+| LLM       | Groq (llama-3.3-70b-versatile) |
+| TTS       | Inworld (6 voices) |
+| Storage   | Redis |
+| Container | Docker + Docker Compose |
+| Deploy    | Railway |
 
 ## API Endpoints
 
-### Session Management
+### Start Session
 
 ```bash
-# Generate LiveKit token
-POST /api/token
-{
-  "sessionId": "session_123",
-  "userId": "user_456"
-}
-
-# Start voice session
 POST /api/session/start
 {
-  "sessionId": "session_123",
-  "userId": "user_456",
-  "config": {
-    "voice": "inworld-male-1",
-    "systemPrompt": "You are a helpful assistant"
+  "userName": "user123",
+  "voiceId": "Ashley",
+  "openingLine": "Hello! How can I help?",
+  "systemPrompt": "You are a helpful assistant."
+}
+```
+
+**Response:**
+```json
+{
+  "sessionId": "session_123...",
+  "token": "eyJ...",
+  "serverUrl": "wss://...",
+  "roomName": "session_123..."
+}
+```
+
+### End Session
+
+```bash
+POST /api/session/end
+{"sessionId": "session_123"}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "details": {
+    "durationSeconds": 125,
+    "durationMinutes": 3
   }
 }
+```
 
-# End session
-POST /api/session/end
-{
-  "sessionId": "session_123"
-}
+### Health Check
 
-# Health check
+```bash
 GET /health
+```
 
-# System stats
-GET /stats
+See [backend/API.md](backend/API.md) for complete API reference.
+
+## Project Structure
+
+```
+backend/
+├── orchestrator/    # FastAPI API + Celery workers
+├── agent/          # Pipecat voice assistant
+└── common/         # Shared logging & utilities
+
+frontend/           # React dev UI
+scripts/           # Helper scripts (Railway SSH, logs)
+
+docker-compose.yml # Local development
+Makefile          # Development commands
 ```
 
 ## Development
 
-### Local Development (Without Docker)
-
-**Backend:**
+### Quick Commands
 
 ```bash
-# Install dependencies
+make dev              # Start all services
+make logs             # View all logs
+make logs-orchestrator # FastAPI logs only
+make logs-celery      # Celery worker logs
+make stop             # Stop services
+make clean            # Remove containers & volumes
+```
+
+### Local Setup
+
+**With Docker:**
+```bash
+make dev-d          # Start in background
+make health         # Verify services
+```
+
+**Without Docker:**
+```bash
+# Redis
+redis-server
+
+# Backend
 cd backend
 pip install -r requirements.txt
 pip install -r orchestrator/requirements.txt
 pip install -r agent/requirements.txt
+supervisord -c supervisord.conf
 
-# Set PYTHONPATH
-export PYTHONPATH=/path/to/livekit-demo
-
-# Start Redis
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Terminal 1: FastAPI
-cd backend/orchestrator
-uvicorn main:app --reload --port 8000
-
-# Terminal 2: Celery Worker
-cd backend/orchestrator
-celery -A tasks worker --loglevel=info
-
-# Terminal 3: Celery Beat
-cd backend/orchestrator
-celery -A tasks beat --loglevel=info
-```
-
-**Frontend:**
-
-```bash
+# Frontend
 cd frontend
 npm install
 npm run dev
 ```
 
-### Project Structure
-
-```
-backend/
-├── __init__.py                # Package marker
-├── requirements.txt           # Shared dependencies
-├── Dockerfile                 # Backend container image
-├── supervisord.conf           # Railway process manager (uses $PORT)
-├── common/
-│   ├── __init__.py
-│   └── logging_config.py     # Structured logging
-├── orchestrator/
-│   ├── __init__.py
-│   ├── main.py               # FastAPI app
-│   ├── tasks.py              # Celery tasks
-│   ├── celeryconfig.py       # Celery config
-│   └── requirements.txt      # Orchestrator deps
-└── agent/
-    ├── __init__.py
-    ├── voice_assistant.py    # Voice bot
-    └── requirements.txt      # Agent deps
-
-frontend/
-├── src/
-│   ├── App.tsx              # Main component
-│   ├── DevTools.tsx         # Development tools
-│   ├── VoiceSettings.tsx    # Voice configuration UI
-│   ├── types.ts             # TypeScript types
-│   ├── logger.ts            # Frontend logging
-│   └── styles.css           # Global styles
-├── Dockerfile               # Frontend container image
-├── package.json
-├── vite.config.ts
-└── README.md                # Frontend-specific docs
-```
+See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed setup.
 
 ## Configuration
 
 ### Environment Variables
 
 **Required:**
-- `LIVEKIT_URL` - LiveKit server WebSocket URL
-- `LIVEKIT_API_KEY` - LiveKit API key
-- `LIVEKIT_API_SECRET` - LiveKit API secret
-- `GROQ_API_KEY` - Groq API key
-- `ASSEMBLY_API_KEY` - AssemblyAI API key
-- `INWORLD_API_KEY` - Inworld AI API key
+```bash
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=APIxxxxx
+LIVEKIT_API_SECRET=secretxxxxx
+GROQ_API_KEY=gsk_xxxxx
+ASSEMBLY_API_KEY=xxxxx
+INWORLD_API_KEY=xxxxx
+REDIS_URL=redis://localhost:6379/0
+```
 
 **Optional:**
-- `REDIS_URL` - Redis connection URL (default: redis://localhost:6379/0)
-- `MAX_BOTS` - Max concurrent bots (default: 50)
-- `SESSION_TIMEOUT` - Session timeout in ms (default: 1800000)
-- `BOT_STARTUP_TIMEOUT` - Agent startup timeout in seconds (default: 30)
-- `PREWARM_POOL_SIZE` - Pre-warmed agent pool size (default: 3)
+```bash
+MAX_BOTS=50                  # Max concurrent agents
+SESSION_TIMEOUT=1800000      # 30 minutes
+LOG_LEVEL=INFO               # Logging level
+```
+
+See [CONFIGURATION.md](CONFIGURATION.md) for all options.
 
 ### Voice Configuration
 
-Available voices (Inworld AI):
-- `inworld-male-1` - Default male voice
-- `inworld-female-1` - Default female voice
-- Custom voices from Inworld AI workspace
+Available voices (Inworld):
+- **Ashley** - Default (Female, 1.0x speed)
+- **Craig** - Professional male (1.2x speed)
+- **Edward** - Smooth male (1.0x speed)
+- **Olivia** - Professional female (1.0x speed)
+- **Wendy** - Energetic female (1.2x speed)
+- **Priya** - Asian accent female (1.0x speed)
+
+Agent configuration: `backend/agent/voice_assistant.py` (lines 44-115)
+
+See [CONFIGURATION.md](CONFIGURATION.md) for tuning parameters.
 
 ## Deployment
 
-### Docker Compose (Recommended)
+### Docker Compose (Local)
 
 ```bash
-# Production build
 docker-compose up -d --build
-
-# View logs
 docker-compose logs -f
-
-# Stop services
-docker-compose down
-
-# Clean up volumes
-docker-compose down -v
 ```
 
-### Railway / Cloud Platforms
-
-The project is configured for easy deployment to Railway, Render, or similar platforms.
-
-**Services to deploy:**
-1. **Redis** - Use managed Redis service (or existing Railway Redis)
-2. **Backend Orchestrator** - Configure with:
-   - Root Directory: `/` (repo root)
-   - Dockerfile Path: `/backend/Dockerfile`
-   - Builder: Dockerfile
-3. **Frontend** - Configure with:
-   - Root Directory: `/` (repo root)
-   - Dockerfile Path: `/frontend/Dockerfile`
-   - Builder: Dockerfile
-
-**Environment Variables:**
-- **Backend**: Set all variables from `.env.railway.example`
-- **Frontend**: Set `VITE_API_URL` to your backend service URL
-
-See `RAILWAY_DEPLOYMENT.md` for detailed Railway setup instructions and troubleshooting.
-
-## Monitoring & Logs
-
-### Docker Logs
+### Railway (Production)
 
 ```bash
-# All services
-docker-compose logs -f
+# Install Railway CLI
+npm install -g @railway/cli
 
-# Specific service
-docker-compose logs -f orchestrator
-docker-compose logs -f frontend
-docker-compose logs -f redis
+# Login and deploy
+railway login
+railway init
+railway up
 ```
 
-### Application Logs
-
-Inside orchestrator container:
-- `/var/log/supervisor/fastapi.log` - FastAPI server
-- `/var/log/supervisor/celery-worker.log` - Celery worker
-- `/var/log/supervisor/celery-beat.log` - Celery beat
-
-### Metrics
-
-Check system stats:
-```bash
-curl http://localhost:8000/stats
-```
-
-Response includes:
-- Active sessions
-- Pre-warmed agent count
-- Redis status
-- Agent pool health
-
-## Troubleshooting
-
-### Common Issues
-
-**1. Agent fails to spawn**
-- Verify all AI API keys are set
-- Check `PYTHON_SCRIPT_PATH` points to `/app/backend/agent/voice_assistant.py`
-- Review Celery worker logs
-
-**2. Import errors**
-- Ensure `PYTHONPATH=/app` is set in environment
-- Verify `__init__.py` files exist in all Python packages
-
-**3. Frontend can't connect to backend**
-- Check `VITE_API_URL` environment variable (should point to backend URL)
-- Verify orchestrator is running on port 8000
-- Check CORS settings in `backend/orchestrator/main.py`
-- For Railway: Ensure frontend has `VITE_API_URL` set to backend service URL
-
-**4. LiveKit connection errors**
-- Verify `LIVEKIT_URL` is accessible
-- Check API key/secret are correct
-- Ensure firewall allows WebSocket connections
-
-**5. Redis connection errors**
-- Verify Redis is running: `docker-compose ps redis`
-- Check Redis health: `docker exec voice-agent-redis redis-cli ping`
-- Verify `REDIS_URL` is correct
-
-### Debug Mode
-
-Enable debug logging:
-
-```bash
-# In docker-compose.yml, add to orchestrator environment:
-LOG_LEVEL: debug
-
-# Or run locally with:
-uvicorn main:app --reload --log-level debug
-celery -A tasks worker --loglevel=debug
-```
-
-## Performance Tuning
-
-### Agent Pool Size
-
-Adjust `PREWARM_POOL_SIZE` based on:
-- Expected concurrent users
-- Server resources
-- Connection patterns
-
-Recommendation: Start with 3, increase if connections are slow.
-
-### Celery Concurrency
-
-Adjust worker concurrency in `supervisord.conf`:
-```
-command=celery -A tasks worker --loglevel=info --concurrency=4
-```
-
-Increase concurrency for more parallel agent spawns.
-
-### Session Timeout
-
-Adjust `SESSION_TIMEOUT` to clean up idle sessions:
-```
-SESSION_TIMEOUT: 1800000  # 30 minutes in milliseconds
-```
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete Railway setup.
 
 ## Testing
 
-### Test Backend API
-
+### Health Check
 ```bash
-# Health check
 curl http://localhost:8000/health
+```
 
-# Get token
-curl -X POST http://localhost:8000/api/token \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"test-123","userId":"user-1"}'
-
-# Start session
+### Create Session
+```bash
 curl -X POST http://localhost:8000/api/session/start \
   -H "Content-Type: application/json" \
-  -d '{
-    "sessionId":"test-123",
-    "userId":"user-1",
-    "config":{"voice":"inworld-male-1"}
-  }'
-
-# Check stats
-curl http://localhost:8000/stats
+  -d '{"userName":"TestUser","voiceId":"Ashley"}'
 ```
 
-### Test Voice Agent
-
+### End Session
 ```bash
-# Direct agent test (requires LiveKit token)
-docker exec voice-agent-orchestrator python /app/backend/agent/voice_assistant.py \
-  --url $LIVEKIT_URL \
-  --token "your-test-token" \
-  --session-id "test-session"
+curl -X POST http://localhost:8000/api/session/end \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"session_123"}'
 ```
 
-## Contributing
+## Troubleshooting
 
-See `backend/README.md` for backend architecture details.
+### Services Won't Start
+```bash
+make ps           # Check container status
+make logs-all     # View all logs
+make clean        # Clean and rebuild
+make build
+make dev-d
+```
+
+### No Audio
+- Check microphone permissions in browser
+- Verify LiveKit credentials in `.env`
+- Check browser console for WebRTC errors
+
+### Agent Not Responding
+```bash
+make logs-celery              # Check Celery worker
+make redis-sessions           # Check session state
+make logs-agent-live SESSION=xxx  # Watch agent logs
+```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed troubleshooting.
+
+## Documentation
+
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Local setup, Makefile commands, troubleshooting
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Railway deployment guide
+- **[CONFIGURATION.md](CONFIGURATION.md)** - All environment variables & agent config
+- **[backend/API.md](backend/API.md)** - REST API endpoints reference
+- **[frontend/README.md](frontend/README.md)** - Frontend development guide
+- **[scripts/README.md](scripts/README.md)** - Helper scripts usage
 
 ## License
 
@@ -464,4 +331,4 @@ MIT
 
 ## Support
 
-For issues, questions, or contributions, please open an issue on GitHub.
+For issues or questions, open an issue on GitHub.

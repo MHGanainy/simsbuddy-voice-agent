@@ -1,188 +1,264 @@
-# Railway Helper Scripts
+# Helper Scripts
 
-Utilities for viewing Railway deployment logs and debugging.
+Utility scripts for Railway deployment debugging and testing.
+
+## Prerequisites
+
+```bash
+# Install Railway CLI (for Railway scripts)
+npm install -g @railway/cli
+railway login
+
+# Install jq (for test scripts)
+brew install jq  # macOS
+# or
+apt-get install jq  # Linux
+```
 
 ## Scripts
 
-### `view-railway-logs.sh` - View Agent Logs Remotely
+### test_concurrent_sessions.py - Concurrent Session Isolation Test
 
-View voice agent logs from Railway without SSHing in.
+**Purpose:** Validates that multiple voice agent sessions can run simultaneously with complete isolation. Tests process group boundaries and prevents cross-contamination between patient consultations.
 
-**Usage:**
-
-```bash
-# List all available sessions
-./scripts/view-railway-logs.sh --list
-
-# View latest session logs (default: 100 lines)
-./scripts/view-railway-logs.sh --latest
-
-# View latest session logs (custom lines)
-./scripts/view-railway-logs.sh --latest 50
-
-# View specific session logs (default: 100 lines)
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy
-
-# View specific session logs (custom lines)
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy 200
-
-# View only errors for a session
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy --errors
-```
-
-**Examples:**
-
-```bash
-# Quick check: list recent sessions
-./scripts/view-railway-logs.sh --list
-
-# View the most recent session
-./scripts/view-railway-logs.sh --latest
-
-# Debug a specific session
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy --errors
-
-# View full session log
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy 500
-```
-
-### `railway-ssh.sh` - Quick SSH Access
-
-SSH into the Railway backend service.
+**What it tests:**
+- 5 concurrent sessions with different patients and voices
+- Unique process groups (PID, PGID) for each session
+- Process group leader verification (PGID == PID)
+- Independent session termination (random order)
+- Cross-contamination prevention
+- Redis namespace isolation
+- Separate log files for each session
 
 **Usage:**
+```bash
+# Run with default orchestrator URL (http://localhost:8000)
+python3 scripts/test_concurrent_sessions.py
 
+# Run with custom orchestrator URL
+ORCHESTRATOR_URL=http://your-server:8000 python3 scripts/test_concurrent_sessions.py
+```
+
+**Requirements:**
+- Python 3.7+
+- `aiohttp` library (async HTTP requests)
+- `colorama` library (colored output)
+- Orchestrator must be running
+
+**Install dependencies:**
+```bash
+pip3 install aiohttp colorama --break-system-packages
+# or with --user flag
+pip3 install aiohttp colorama --user
+```
+
+**Example output:**
+```
+╔════════════════════════════════════════════════════════════════════╗
+║     Concurrent Session Isolation Test - Medical Voice Agents      ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Step 1: Starting Concurrent Sessions
+[PASS] Session started: patient1 → session_123...
+[PASS] Session started: patient2 → session_456...
+... (5 sessions total)
+
+Step 2: Verifying Session Isolation
+Session Status:
+Patient    Session ID         PID   PGID  Leader  Alive  Status
+patient1   session_123...     258   258   ✓       ✓      Running
+patient2   session_456...     260   260   ✓       ✓      Running
+...
+
+Step 3: Isolation Verification
+[PASS] All 5 sessions have unique PIDs
+[PASS] All 5 sessions have unique PGIDs
+[PASS] All sessions are group leaders (PGID == PID)
+[PASS] All sessions are alive
+[PASS] All 5 sessions have unique log files
+
+Step 4: Testing Independent Termination
+[TEST] Terminating in random order: patient3, patient1, patient5...
+[PASS] 4 sessions still alive (expected 4)
+[PASS] 3 sessions still alive (expected 3)
+...
+
+Final Test Report:
+  ✓ ALL TESTS PASSED
+  Passed: 24 / Failed: 0 / Pass Rate: 100%
+
+Conclusion: Multiple medical consultations can run simultaneously
+with complete isolation. Process groups provide proper boundaries.
+```
+
+**What this proves:**
+- ✅ Multiple medical consultations can run at the same time
+- ✅ Each patient's session is completely isolated
+- ✅ Terminating one session never affects others
+- ✅ Process groups provide proper isolation boundaries
+- ✅ System is production-ready for concurrent use
+
+---
+
+### test-termination.sh - Process Group Termination Test
+
+**Purpose:** Validates that voice agent processes and their child processes (ffmpeg, etc.) are properly terminated when a session ends.
+
+**What it tests:**
+- Process spawning with correct process group setup
+- Process group leader verification (PGID == PID)
+- Proper cleanup when session ends
+- Redis key cleanup
+- All child processes are terminated
+
+**Usage:**
+```bash
+# Run with default orchestrator URL (http://localhost:8000)
+./scripts/test-termination.sh
+
+# Run with custom orchestrator URL
+ORCHESTRATOR_URL=http://your-server:8000 ./scripts/test-termination.sh
+```
+
+**Requirements:**
+- `curl` command (for API calls)
+- `jq` command (for JSON parsing)
+- `redis-cli` or Docker (optional, for Redis verification)
+- Orchestrator must be running
+
+**Example output:**
+```
+=== Process Group Termination Test ===
+
+=== Step 1: Starting Test Session ===
+[PASS] Session started: session_1234567890_abc123def
+
+=== Step 2: Waiting for Agent to Start ===
+[INFO] Waiting 5 seconds for agent to fully initialize...
+
+=== Step 3: Verifying Process Group Setup ===
+[PASS] Process is alive (PID: 12345)
+[PASS] Process is group leader (PID == PGID: 12345)
+[PASS] Process group is alive
+[INFO] Found 2 process(es) in the group:
+  - PID 12345: python3 /app/backend/agent/voice_assistant.py
+  - PID 12346: ffmpeg -i pipe:0 -f wav pipe:1
+
+=== Step 4: Terminating Session ===
+[PASS] Session end request accepted
+
+=== Step 5: Verifying Process Cleanup ===
+[PASS] Process is NOT alive (killed successfully)
+[PASS] Process group is NOT alive (killed successfully)
+
+=== Step 6: Verifying Redis Cleanup ===
+[PASS] Redis key 'session:...' cleaned up
+[PASS] Redis key 'agent:...:pid' cleaned up
+
+=== Test Summary ===
+Total checks: 8
+Passed: 8
+Failed: 0
+
+✓ All tests passed! Process group termination is working correctly.
+```
+
+**Troubleshooting:**
+- If tests fail, check orchestrator logs for errors
+- Ensure all required environment variables are set
+- Verify LiveKit, Groq, Inworld, and AssemblyAI credentials are valid
+
+---
+
+### view-railway-logs.sh - View Agent Logs
+
+View voice agent logs from Railway remotely.
+
+**Usage:**
+```bash
+# List all sessions
+./scripts/view-railway-logs.sh --list
+
+# View latest session
+./scripts/view-railway-logs.sh --latest
+
+# View specific session (default: 100 lines)
+./scripts/view-railway-logs.sh session_1762006306800_xyz
+
+# View specific session (custom lines)
+./scripts/view-railway-logs.sh session_1762006306800_xyz 200
+
+# View only errors
+./scripts/view-railway-logs.sh session_1762006306800_xyz --errors
+```
+
+### railway-ssh.sh - SSH Access
+
+SSH into Railway backend service.
+
+**Usage:**
 ```bash
 ./scripts/railway-ssh.sh
 ```
 
-Once inside, use these commands:
-
+**Useful commands once inside:**
 ```bash
-# List recent session logs
+# List recent logs
 ls -lht /var/log/voice-agents/ | head -10
 
-# View specific session log
-tail -100 /var/log/voice-agents/session_1762006306800_95vwu1ldy.log
+# View session log
+tail -100 /var/log/voice-agents/session_xyz.log
 
-# Follow logs in real-time (like tail -f)
-tail -f /var/log/voice-agents/session_1762006306800_95vwu1ldy.log
+# Follow logs in real-time
+tail -f /var/log/voice-agents/session_xyz.log
 
 # Search for errors
-grep -i "error\|exception" /var/log/voice-agents/session_1762006306800_95vwu1ldy.log
+grep -i "error" /var/log/voice-agents/session_xyz.log
 
-# Check environment variables
-echo "INWORLD_API_KEY: ${INWORLD_API_KEY:0:10}..."
-echo "GROQ_API_KEY: ${GROQ_API_KEY:0:10}..."
-echo "LIVEKIT_URL: $LIVEKIT_URL"
+# Check environment
+echo "$INWORLD_API_KEY" | head -c 10
 
-# Check running processes
+# Check processes
 ps aux | grep voice_assistant
 ```
 
-## Prerequisites
-
-Install Railway CLI:
-
-```bash
-# macOS/Linux
-curl -fsSL https://railway.app/install.sh | sh
-
-# Or with npm
-npm install -g @railway/cli
-
-# Login
-railway login
-```
-
-## Configuration
-
-The scripts are pre-configured with your Railway project details:
-
-- **Project ID**: `eeadd330-18a4-418d-a072-755fe433b73f`
-- **Environment**: `6043171d-fa00-40e8-ade9-7933853fa7b8`
-- **Service**: `a03f6883-68b6-4fa4-9fb0-634652ed0a4c` (backend)
-
-If these change, update them in the scripts.
-
 ## Common Workflows
 
-### Debugging a Session
-
+### Debug a Session
 ```bash
-# 1. List recent sessions to find the session ID
+# 1. List recent sessions
 ./scripts/view-railway-logs.sh --list
 
-# 2. Check for errors in that session
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy --errors
+# 2. Check for errors
+./scripts/view-railway-logs.sh session_xyz --errors
 
 # 3. View full logs if needed
-./scripts/view-railway-logs.sh session_1762006306800_95vwu1ldy 500
+./scripts/view-railway-logs.sh session_xyz 500
 ```
 
 ### Live Monitoring
-
-For real-time log following (like `tail -f`):
-
 ```bash
 # SSH into Railway
 ./scripts/railway-ssh.sh
 
-# Then inside the container:
-tail -f /var/log/voice-agents/session_XXXXX.log
-```
-
-### Quick Health Check
-
-```bash
-# View the latest session to see if things are working
-./scripts/view-railway-logs.sh --latest
+# Follow logs in real-time
+tail -f /var/log/voice-agents/session_xyz.log
 ```
 
 ## Troubleshooting
 
 ### "railway: command not found"
-
-Install the Railway CLI:
 ```bash
 npm install -g @railway/cli
 ```
 
 ### "Permission denied"
-
-Make scripts executable:
 ```bash
 chmod +x scripts/*.sh
 ```
 
 ### "No logs found"
-
-The session ID might be wrong or the session hasn't generated logs yet. List available sessions:
+Check session ID:
 ```bash
 ./scripts/view-railway-logs.sh --list
-```
-
-## Adding to Makefile (Optional)
-
-You can add these to your Makefile for easier access:
-
-```makefile
-# Railway helpers
-.PHONY: railway-ssh railway-logs railway-logs-latest
-
-railway-ssh:
-	@./scripts/railway-ssh.sh
-
-railway-logs:
-	@./scripts/view-railway-logs.sh $(SESSION)
-
-railway-logs-latest:
-	@./scripts/view-railway-logs.sh --latest
-```
-
-Then use:
-```bash
-make railway-ssh
-make railway-logs-latest
-make railway-logs SESSION=session_1762006306800_95vwu1ldy
 ```

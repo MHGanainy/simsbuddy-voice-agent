@@ -3,7 +3,6 @@ Celery tasks for voice agent orchestration.
 
 This module defines asynchronous tasks for:
 - Spawning voice agents
-- Maintaining a pre-warmed agent pool
 - Health checking running agents
 - Cleaning up stale sessions
 """
@@ -33,7 +32,7 @@ redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 # Configuration
 PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_assistant.py')
 BOT_STARTUP_TIMEOUT = int(os.getenv('BOT_STARTUP_TIMEOUT', 30))  # Increased for ML model loading
-PREWARM_POOL_SIZE = int(os.getenv('PREWARM_POOL_SIZE', 3))
+SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT', 14400))  # 4 hours for medical conversations
 MAX_LOG_ENTRIES = 100
 AGENT_LOG_DIR = os.getenv('AGENT_LOG_DIR', '/var/log/voice-agents')
 
@@ -93,14 +92,13 @@ def continuous_log_reader(process, session_id, log_file_path):
 
 
 @app.task(base=AgentSpawnTask, bind=True, name='spawn_voice_agent')
-def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
+def spawn_voice_agent(self, session_id, user_id=None):
     """
     Spawn a voice agent process asynchronously.
 
     Args:
         session_id: Unique session identifier
-        user_id: User ID (None for pre-warmed agents)
-        prewarm: If True, agent goes to pool instead of ready state
+        user_id: User ID for the session
 
     Returns:
         dict: {session_id, pid, status, startup_time}
@@ -111,11 +109,12 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
     # Use LogContext for correlation tracking
     with LogContext(session_id=session_id, task_id=task_id, user_id=user_id):
         try:
-            logger.info("agent_spawn_started", prewarm=prewarm)
+            logger.info("agent_spawn_started")
 
             # Fetch user configuration if user_id is provided
             voice_id = 'Ashley'  # Default voice
             opening_line = None
+            system_prompt = None
 
             if user_id:
                 try:
@@ -125,9 +124,12 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                         voice_id = config[b'voiceId'].decode('utf-8')
                         if b'openingLine' in config:
                             opening_line = config[b'openingLine'].decode('utf-8')
+                        if b'systemPrompt' in config:
+                            system_prompt = config[b'systemPrompt'].decode('utf-8')
                         logger.info("user_config_loaded",
                                    voice_id=voice_id,
-                                   opening_line_preview=opening_line[:50] if opening_line else 'default')
+                                   opening_line_preview=opening_line[:50] if opening_line else 'default',
+                                   system_prompt_preview=system_prompt[:50] if system_prompt else 'default')
                 except Exception as e:
                     logger.warning("user_config_load_failed", error=str(e), fallback="defaults")
 
@@ -145,12 +147,14 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
             cmd = ['python3', PYTHON_SCRIPT_PATH, '--room', session_id, '--voice-id', voice_id]
             if opening_line:
                 cmd.extend(['--opening-line', opening_line])
+            if system_prompt:
+                cmd.extend(['--system-prompt', system_prompt])
 
             # Create log file path for this agent
             log_file_path = os.path.join(AGENT_LOG_DIR, f'{session_id}.log')
 
             # Spawn Python process
-            # Use start_new_session to detach from parent and prevent zombies
+            # Use os.setsid to create new process group for proper cleanup
             # Redirect stderr to stdout so we can read all logs from one stream
             process = subprocess.Popen(
                 cmd,
@@ -159,18 +163,47 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                 text=True,
                 bufsize=1,
                 env=os.environ.copy(),
-                start_new_session=True  # Detach from parent process group
+                preexec_fn=os.setsid  # Create new process group
             )
 
             pid = process.pid
 
-            # Store PID and log file path in Redis for cleanup and access
-            redis_client.set(f'agent:{session_id}:pid', pid, ex=7200)  # 2 hour TTL
-            redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=7200)
-            redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
-            redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
+            # Get process group ID for verification and tracking
+            try:
+                pgid = os.getpgid(pid)
+                is_group_leader = (pgid == pid)
 
-            logger.info("agent_process_spawned", pid=pid, voice_id=voice_id, log_file=log_file_path)
+                # Store PID, PGID, and log file path in Redis for cleanup and access
+                redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)  # 4 hour TTL
+                redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=14400)  # 4 hour TTL
+                redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+                redis_client.hset(f'session:{session_id}', 'agentPgid', str(pgid))
+                redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
+
+                logger.info("agent_process_spawned",
+                           pid=pid,
+                           pgid=pgid,
+                           is_group_leader=is_group_leader,
+                           voice_id=voice_id,
+                           log_file=log_file_path)
+
+                # Verify that the process is a group leader (expected with os.setsid)
+                if not is_group_leader:
+                    logger.warning("agent_not_group_leader",
+                                  pid=pid,
+                                  pgid=pgid,
+                                  warning="Process may not be properly isolated for cleanup")
+
+            except (ProcessLookupError, OSError) as e:
+                logger.error("agent_pgid_lookup_failed",
+                           pid=pid,
+                           error=str(e),
+                           warning="Process group tracking unavailable")
+                # Still store PID even if PGID lookup fails
+                redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)
+                redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=14400)
+                redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+                redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
 
             # Start background thread for continuous log reading
             # This prevents the pipe from filling up and blocking the agent
@@ -209,18 +242,11 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                         for line_bytes in new_lines:
                             line = line_bytes.decode('utf-8') if isinstance(line_bytes, bytes) else line_bytes
 
-                            # Pre-warmed agents are ready after initialization
-                            # User agents wait for actual LiveKit connection
-                            if prewarm:
-                                if any(keyword in line for keyword in ['Inworld TTS service initialized', 'LiveKitInputTransport', 'Pipeline#0::Source']):
-                                    connected = True
-                                    logger.info("agent_prewarmed_initialized", log_line=line[:100])
-                                    break
-                            else:
-                                if any(keyword in line for keyword in ['Connected to', 'Pipeline started', 'Room joined', 'Participant joined']):
-                                    connected = True
-                                    logger.info("agent_connected_successfully", log_line=line[:100])
-                                    break
+                            # Check for LiveKit connection
+                            if any(keyword in line for keyword in ['Connected to', 'Pipeline started', 'Room joined', 'Participant joined']):
+                                connected = True
+                                logger.info("agent_connected_successfully", log_line=line[:100])
+                                break
 
                         if connected:
                             break
@@ -238,10 +264,10 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
 
             if not connected:
                 logger.error("agent_connection_timeout", timeout_seconds=BOT_STARTUP_TIMEOUT)
-                process.terminate()
+                os.killpg(process.pid, signal.SIGTERM)  # Kill entire process group
                 time.sleep(2)
                 if process.poll() is None:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)  # Force kill process group
                 raise Exception(f"Agent failed to connect within {BOT_STARTUP_TIMEOUT}s")
 
             # Update session to ready
@@ -253,19 +279,12 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                 'lastActive': int(time.time())
             })
 
-            # Move to appropriate state
+            # Move to ready state
             redis_client.srem('session:starting', session_id)
-            if prewarm:
-                redis_client.sadd('pool:ready', session_id)
-                logger.info("agent_prewarmed_ready", startup_time_seconds=f"{startup_time:.2f}")
-            else:
-                redis_client.sadd('session:ready', session_id)
-                if user_id:
-                    redis_client.set(f'session:user:{user_id}', session_id)
-                logger.info("agent_user_ready", startup_time_seconds=f"{startup_time:.2f}")
-
-            # Update pool stats
-            redis_client.hincrby('pool:stats', 'total_spawned', 1)
+            redis_client.sadd('session:ready', session_id)
+            if user_id:
+                redis_client.set(f'session:user:{user_id}', session_id)
+            logger.info("agent_ready", startup_time_seconds=f"{startup_time:.2f}")
 
             result = {
                 'session_id': session_id,
@@ -295,36 +314,6 @@ def spawn_voice_agent(self, session_id, user_id=None, prewarm=False):
                 raise self.retry(exc=e)
 
             raise
-
-
-@app.task(name='prewarm_agent_pool')
-def prewarm_agent_pool():
-    """
-    Maintain a pool of pre-warmed agents ready for instant assignment.
-    Runs every 30 seconds via Beat scheduler.
-    """
-    try:
-        target_size = int(redis_client.get('pool:target') or PREWARM_POOL_SIZE)
-        current_size = redis_client.scard('pool:ready')
-
-        deficit = target_size - current_size
-
-        if deficit > 0:
-            logger.info("pool_deficit_detected",
-                       deficit=deficit,
-                       current_size=current_size,
-                       target_size=target_size)
-
-            for i in range(deficit):
-                session_id = f"prewarm_{uuid.uuid4().hex[:8]}"
-                logger.info("pool_spawning_agent", agent_num=i+1, total=deficit, session_id=session_id)
-                spawn_voice_agent.delay(session_id, user_id=None, prewarm=True)
-
-        else:
-            logger.debug("pool_healthy", current_size=current_size, target_size=target_size)
-
-    except Exception as e:
-        logger.error("pool_prewarm_error", error=str(e), exc_info=True)
 
 
 @app.task(name='health_check_agents')
@@ -391,7 +380,6 @@ def health_check_agents():
                              action="marking_as_failed")
                 redis_client.hset(f'session:{session_id}', 'status', 'error')
                 redis_client.hset(f'session:{session_id}', 'error', 'Process died unexpectedly')
-                redis_client.srem('pool:ready', session_id)
                 redis_client.srem('session:ready', session_id)
                 dead_count += 1
 
@@ -412,7 +400,7 @@ def cleanup_stale_agents():
     """
     try:
         now = int(time.time())
-        timeout = int(os.getenv('SESSION_TIMEOUT', 1800))  # Default 30 minutes
+        timeout = int(os.getenv('SESSION_TIMEOUT', 14400))  # Default 4 hours
         cleaned_count = 0
 
         session_keys = redis_client.keys('session:*')
@@ -444,15 +432,15 @@ def cleanup_stale_agents():
                            session_id=session_id,
                            inactive_seconds=now - last_active)
 
-                # Stop agent process
+                # Stop agent process and all children
                 pid = session_data.get('agentPid')
                 if pid:
                     try:
-                        os.kill(int(pid), signal.SIGTERM)
+                        os.killpg(int(pid), signal.SIGTERM)  # Kill entire process group
                         time.sleep(2)
                         # Force kill if still alive
                         try:
-                            os.kill(int(pid), signal.SIGKILL)
+                            os.killpg(int(pid), signal.SIGKILL)  # Force kill process group
                         except (ProcessLookupError, OSError):
                             pass
                     except (ProcessLookupError, OSError):
@@ -465,7 +453,6 @@ def cleanup_stale_agents():
                 redis_client.delete(f'agent:{session_id}:logs')
                 redis_client.delete(f'agent:{session_id}:logfile')
                 redis_client.delete(f'agent:{session_id}:health')
-                redis_client.srem('pool:ready', session_id)
                 redis_client.srem('session:ready', session_id)
                 redis_client.srem('session:starting', session_id)
                 if user_id:
@@ -495,11 +482,6 @@ def cleanup_stale_agents():
 
 # Beat Schedule Configuration
 app.conf.beat_schedule = {
-    # Prewarm pool disabled - using on-demand agent creation only
-    # 'prewarm-pool-every-30s': {
-    #     'task': 'prewarm_agent_pool',
-    #     'schedule': 30.0,  # Every 30 seconds
-    # },
     'health-check-every-60s': {
         'task': 'health_check_agents',
         'schedule': 60.0,  # Every 60 seconds
@@ -518,5 +500,4 @@ if __name__ == '__main__':
     logger.info("celery_tasks_loaded",
                redis_url=os.getenv('REDIS_URL', 'Not set'),
                python_script_path=PYTHON_SCRIPT_PATH,
-               bot_startup_timeout=BOT_STARTUP_TIMEOUT,
-               prewarm_pool_size=PREWARM_POOL_SIZE)
+               bot_startup_timeout=BOT_STARTUP_TIMEOUT)

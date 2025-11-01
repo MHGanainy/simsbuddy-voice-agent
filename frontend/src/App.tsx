@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { LiveKitRoom, RoomAudioRenderer, useConnectionState } from '@livekit/components-react';
 import { ConnectionState } from 'livekit-client';
 import '@livekit/components-styles';
@@ -19,6 +19,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
  * - Removed: Session info display, user name input
  * - Fixed: Backend URL to port 8000 (was 8080)
  * - Added: Comprehensive logging throughout
+ * - Fixed: Duplicate end session calls with refs
  */
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -30,8 +31,13 @@ export default function App() {
 
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettingsType>({
     voiceId: 'Ashley',
-    openingLine: 'Hello! How can I help you today?'
+    openingLine: 'Hello! How can I help you today?',
+    systemPrompt: ''
   });
+
+  // Refs to prevent duplicate end session calls
+  const sessionIdRef = useRef<string | null>(null);
+  const endedSessionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     logger.info('App initialized', { apiUrl: API_URL });
@@ -62,7 +68,8 @@ export default function App() {
         body: JSON.stringify({
           userName: `user_${Date.now()}`,
           voiceId: voiceSettings.voiceId,
-          openingLine: voiceSettings.openingLine
+          openingLine: voiceSettings.openingLine,
+          ...(voiceSettings.systemPrompt && { systemPrompt: voiceSettings.systemPrompt })
         })
       });
 
@@ -80,6 +87,7 @@ export default function App() {
       });
 
       setSessionId(data.sessionId);
+      sessionIdRef.current = data.sessionId;
       setToken(data.token);
       setServerUrl(data.serverUrl);
       logger.setSessionId(data.sessionId);
@@ -97,7 +105,14 @@ export default function App() {
   const handleEndSession = async () => {
     if (!sessionId || isEnding) return;
 
+    // Check if we've already ended this session
+    if (endedSessionsRef.current.has(sessionId)) {
+      logger.info('Session already ended, skipping duplicate call', { sessionId });
+      return;
+    }
+
     setIsEnding(true);
+    endedSessionsRef.current.add(sessionId);
     logger.info('Ending session...', { sessionId });
 
     try {
@@ -107,11 +122,12 @@ export default function App() {
         body: JSON.stringify({ sessionId })
       });
 
-      if (!response.ok) {
+      // 404 is expected if session was already ended
+      if (!response.ok && response.status !== 404) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      logger.info('Session ended', { sessionId });
+      logger.info('Session ended', { sessionId, status: response.status });
 
     } catch (err) {
       logger.warn('Error ending session (continuing cleanup)', { error: err });
@@ -122,18 +138,30 @@ export default function App() {
     setToken(null);
     setServerUrl(null);
     setIsEnding(false);
+    sessionIdRef.current = null;
     logger.clearSessionId();
   };
 
-  // Cleanup on unmount
+  // Cleanup on unmount - use empty dependency array to only run on actual unmount
   useEffect(() => {
     return () => {
-      if (sessionId) {
-        logger.info('Cleaning up session on unmount');
-        handleEndSession();
+      // Only cleanup on actual unmount, use ref to get current sessionId
+      const currentSessionId = sessionIdRef.current;
+      if (currentSessionId && !endedSessionsRef.current.has(currentSessionId)) {
+        logger.info('Cleaning up session on unmount', { sessionId: currentSessionId });
+        endedSessionsRef.current.add(currentSessionId);
+        // Can't use handleEndSession here as state might be stale
+        // Fire and forget cleanup
+        fetch(`${API_URL}/orchestrator/session/end`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: currentSessionId })
+        }).catch(err => {
+          logger.warn('Unmount cleanup error', { error: err });
+        });
       }
     };
-  }, [sessionId]);
+  }, []); // Empty dependency array - only run on unmount
 
   return (
     <div className="app">

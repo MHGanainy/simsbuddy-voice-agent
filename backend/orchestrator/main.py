@@ -75,6 +75,7 @@ class SessionStartRequest(BaseModel):
     userName: str
     voiceId: Optional[str] = "Ashley"
     openingLine: Optional[str] = None
+    systemPrompt: Optional[str] = None
 
 class SessionStartResponse(BaseModel):
     success: bool
@@ -185,6 +186,8 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         "celery_task_revoked": False,
         "process_killed": False,
         "redis_cleaned": False,
+        "durationSeconds": 0,
+        "durationMinutes": 0,
         "errors": []
     }
 
@@ -197,6 +200,22 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             logger.warning("cleanup_no_session_found", session_id=session_id)
             cleanup_details["errors"].append("Session not found")
             return cleanup_details
+
+        # Extract conversation duration (for billing)
+        try:
+            duration_seconds = session_data.get(b'conversationDuration') or session_data.get('conversationDuration')
+            duration_minutes = session_data.get(b'conversationDurationMinutes') or session_data.get('conversationDurationMinutes')
+
+            if duration_seconds:
+                cleanup_details["durationSeconds"] = int(duration_seconds) if isinstance(duration_seconds, bytes) else int(duration_seconds)
+            if duration_minutes:
+                cleanup_details["durationMinutes"] = int(duration_minutes) if isinstance(duration_minutes, bytes) else int(duration_minutes)
+
+            logger.info("cleanup_duration_extracted",
+                       duration_seconds=cleanup_details["durationSeconds"],
+                       duration_minutes=cleanup_details["durationMinutes"])
+        except Exception as duration_error:
+            logger.warning("cleanup_duration_extraction_failed", error=str(duration_error))
 
         logger.info("cleanup_started", session_id=session_id, session_data=session_data)
 
@@ -221,21 +240,40 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         if pid_str:
             try:
                 pid = int(pid_str)
-                logger.info("cleanup_killing_process", session_id=session_id, pid=pid, signal="SIGTERM")
 
-                # Send SIGTERM first
+                # Get PGID for verification
+                pgid_str = session_data.get('agentPgid')
+                pgid = int(pgid_str) if pgid_str else None
+
+                # Verify process group setup
+                if pgid and pgid != pid:
+                    logger.warning("cleanup_pgid_mismatch",
+                                  session_id=session_id,
+                                  pid=pid,
+                                  pgid=pgid,
+                                  warning="Process may not be a group leader")
+
+                logger.info("cleanup_killing_process",
+                           session_id=session_id,
+                           pid=pid,
+                           pgid=pgid,
+                           is_group_leader=(pgid == pid if pgid else "unknown"),
+                           signal="SIGTERM")
+
+                # Send SIGTERM to entire process group first
                 try:
-                    os.kill(pid, signal.SIGTERM)
+                    os.killpg(pid, signal.SIGTERM)  # Kill entire process group
                     cleanup_details["process_killed"] = True
+                    cleanup_details["pgid"] = pgid
 
-                    # Wait 5 seconds for graceful shutdown (async to avoid blocking)
-                    await asyncio.sleep(5)
+                    # Wait 2 seconds for graceful shutdown (async to avoid blocking)
+                    await asyncio.sleep(2)
 
                     # Check if still alive, send SIGKILL
                     try:
                         os.kill(pid, 0)  # Just check if exists
                         logger.warning("cleanup_process_still_alive", session_id=session_id, pid=pid, signal="SIGKILL")
-                        os.kill(pid, signal.SIGKILL)
+                        os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
                     except ProcessLookupError:
                         logger.info("cleanup_process_terminated_gracefully", session_id=session_id, pid=pid)
 
@@ -269,7 +307,6 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             # Remove from sets
             redis_client.srem('session:ready', session_id)
             redis_client.srem('session:starting', session_id)
-            redis_client.srem('pool:ready', session_id)
 
             cleanup_details["redis_cleaned"] = True
             logger.info("cleanup_redis_cleaned", session_id=session_id, keys_deleted=len(keys_to_delete))
@@ -345,13 +382,15 @@ async def start_session(request: SessionStartRequest):
 
         # Store user config in Redis (for voice customization)
         try:
-            if request.voiceId or request.openingLine:
+            if request.voiceId or request.openingLine or request.systemPrompt:
                 config_key = f"user:{request.userName}:config"
                 config_data = {}
                 if request.voiceId:
                     config_data['voiceId'] = request.voiceId
                 if request.openingLine:
                     config_data['openingLine'] = request.openingLine
+                if request.systemPrompt:
+                    config_data['systemPrompt'] = request.systemPrompt
                 config_data['updatedAt'] = str(int(time.time()))
 
                 redis_client.hset(config_key, mapping=config_data)
@@ -364,8 +403,7 @@ async def start_session(request: SessionStartRequest):
         try:
             task = spawn_voice_agent.delay(
                 session_id=session_id,
-                user_id=request.userName,
-                prewarm=False
+                user_id=request.userName
             )
             task_id = task.id
             logger.info("celery_task_queued", task_id=task_id)
@@ -383,14 +421,15 @@ async def start_session(request: SessionStartRequest):
                 'userName': request.userName,
                 'voiceId': request.voiceId or 'Ashley',
                 'openingLine': request.openingLine or '',
+                'systemPrompt': request.systemPrompt or '',
                 'celeryTaskId': task_id,
                 'status': 'starting',
                 'startTime': str(int(time.time()))
             }
             redis_client.hset(session_key, mapping=session_data)
-            redis_client.expire(session_key, 7200)  # 2 hours
+            redis_client.expire(session_key, 14400)  # 4 hours
 
-            logger.info("session_state_stored", ttl_seconds=7200)
+            logger.info("session_state_stored", ttl_seconds=14400)
         except Exception as e:
             # Non-fatal for now, but log prominently
             logger.warning("session_state_store_failed", error=str(e),
@@ -557,6 +596,132 @@ async def livekit_webhook(request: Request, x_livekit_signature: Optional[str] =
     except Exception as e:
         logger.error("webhook_processing_error", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+
+@app.get("/api/debug/session/{session_id}/processes")
+async def debug_session_processes(session_id: str):
+    """
+    Debug endpoint to inspect process group tracking for a session.
+
+    Returns detailed information about:
+    - Session existence and data
+    - PID and PGID from Redis
+    - Process and process group alive status
+    - Child processes in the process group
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        JSON with process tracking details
+
+    Raises:
+        HTTPException: 404 if session not found
+    """
+    try:
+        import subprocess as sp
+
+        # Get session data
+        session_key = f"session:{session_id}"
+        session_data = redis_client.hgetall(session_key)
+
+        if not session_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
+
+        # Extract PID and PGID
+        pid_str = session_data.get('agentPid')
+        pgid_str = session_data.get('agentPgid')
+
+        if not pid_str:
+            # Try alternate location
+            pid_str = redis_client.get(f"agent:{session_id}:pid")
+
+        result = {
+            "session_id": session_id,
+            "pid": int(pid_str) if pid_str else None,
+            "pgid": int(pgid_str) if pgid_str else None,
+            "is_group_leader": None,
+            "is_process_alive": False,
+            "is_group_alive": False,
+            "child_processes": [],
+            "session_data": session_data,
+            "errors": []
+        }
+
+        if not pid_str:
+            result["errors"].append("No PID found in Redis")
+            return result
+
+        pid = int(pid_str)
+        pgid = int(pgid_str) if pgid_str else None
+
+        # Check if PID is group leader
+        if pgid:
+            result["is_group_leader"] = (pgid == pid)
+
+        # Check if process is alive
+        try:
+            os.kill(pid, 0)  # Signal 0 just checks existence
+            result["is_process_alive"] = True
+        except (ProcessLookupError, OSError) as e:
+            result["is_process_alive"] = False
+            result["errors"].append(f"Process {pid} not alive: {e}")
+
+        # Check if process group is alive
+        try:
+            os.killpg(pid, 0)  # Signal 0 just checks existence
+            result["is_group_alive"] = True
+        except (ProcessLookupError, OSError, PermissionError) as e:
+            result["is_group_alive"] = False
+            result["errors"].append(f"Process group {pid} check failed: {e}")
+
+        # Get child processes using ps command
+        if result["is_process_alive"]:
+            try:
+                # Use ps to find all processes in the same process group
+                # -g: select by process group ID
+                # -o: output format
+                ps_result = sp.run(
+                    ['ps', '-g', str(pid), '-o', 'pid,ppid,pgid,cmd'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+
+                if ps_result.returncode == 0:
+                    lines = ps_result.stdout.strip().split('\n')
+                    if len(lines) > 1:  # Skip header
+                        for line in lines[1:]:
+                            parts = line.strip().split(None, 3)
+                            if len(parts) >= 4:
+                                result["child_processes"].append({
+                                    "pid": int(parts[0]),
+                                    "ppid": int(parts[1]),
+                                    "pgid": int(parts[2]),
+                                    "cmd": parts[3]
+                                })
+                else:
+                    result["errors"].append(f"ps command failed: {ps_result.stderr}")
+
+            except sp.TimeoutExpired:
+                result["errors"].append("ps command timed out")
+            except FileNotFoundError:
+                result["errors"].append("ps command not available")
+            except Exception as e:
+                result["errors"].append(f"Failed to get child processes: {e}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("debug_endpoint_error", session_id=session_id, error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Debug endpoint failed: {str(e)}"
+        )
 
 @app.get("/orchestrator/health")
 async def health_check():

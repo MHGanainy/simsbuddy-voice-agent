@@ -4,9 +4,13 @@ import os
 import sys
 import signal
 import argparse
+import math
+import time
+from datetime import datetime
 
 from dotenv import load_dotenv
 import aiohttp
+import redis
 
 # Import structured logging
 from backend.common.logging_config import setup_logging, LogContext
@@ -29,7 +33,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.livekit import configure
 from pipecat.services.inworld.tts import InworldTTSService
-from pipecat.services.assemblyai.stt import AssemblyAISTTService
+from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
@@ -37,6 +41,83 @@ load_dotenv(override=True)
 
 # Setup logging
 logger = setup_logging(service_name='voice-agent')
+
+# ==================== AGENT CONFIGURATION ====================
+# Adjust these parameters to tune the voice agent behavior
+
+# Timing Configuration (Development Only)
+ENABLE_TIMING = os.getenv('LOG_LEVEL', 'INFO').upper() == 'DEBUG'
+PARTICIPANT_GREETING_DELAY = 0.2  # Seconds to wait before greeting (reduced from 1.0)
+
+# Context Aggregator Settings
+AGGREGATION_TIMEOUT = 0.2  # How long to wait for complete responses
+BOT_INTERRUPTION_TIMEOUT = 0.2  # How quickly bot can be interrupted
+
+# TTS Configuration (Inworld)
+TTS_STREAMING = True
+TTS_TEMPERATURE = 1.1  # Voice expressiveness (0.0-2.0)
+TTS_DEFAULT_SPEED = 1.0  # Default speech rate
+
+# Voice-specific speed overrides
+VOICE_SPEED_OVERRIDES = {
+    "Craig": 1.2,    # Male, faster
+    "Edward": 1.0,   # Male, normal
+    "Olivia": 1.0,   # Female, normal
+    "Wendy": 1.2,    # Female, faster
+    "Priya": 1.0,    # Asian accent Female, normal
+    "Ashley": 1.0,   # Default voice
+}
+
+# STT Configuration (AssemblyAI)
+STT_SAMPLE_RATE = 16000
+STT_ENCODING = "pcm_s16le"
+STT_MODEL = "universal-streaming"
+STT_FORMAT_TURNS = False
+STT_END_OF_TURN_CONFIDENCE = 0.70
+STT_MIN_SILENCE_CONFIDENT = 50  # milliseconds
+STT_MAX_TURN_SILENCE = 200  # milliseconds
+STT_ENABLE_PARTIALS = True
+STT_IMMUTABLE_FINALS = True
+STT_PUNCTUATE = False
+STT_FORMAT_TEXT = False
+STT_VAD_FORCE_ENDPOINT = True
+STT_LANGUAGE = "en"
+
+# LLM Configuration (Groq)
+LLM_MODEL = "llama-3.3-70b-versatile"
+LLM_STREAM = True  # Enable streaming for lower latency
+LLM_MAX_TOKENS = 100
+LLM_TEMPERATURE = 0.6
+LLM_TOP_P = 0.8
+LLM_PRESENCE_PENALTY = 0.15
+LLM_FREQUENCY_PENALTY = 0.30
+
+# Critical Rules (appended to all system prompts - STATIC)
+CRITICAL_RULES = """
+CRITICAL RULES:
+You are roleplaying. Everything you write will be spoken aloud by a text-to-speech system, so follow these rules strictly:
+
+Keep answers short and only answer when asked about a specific point; do not provide unrequested information.
+
+NEVER include:
+- Stage directions like "looks anxious," "appears worried," "seems uncomfortable"
+- Actions in asterisks like *sighs*, *pauses*, *fidgets*
+- Any descriptive text about body language or appearance
+- Brackets except for the emotion tags below
+
+ONLY output accepted:
+- Actual spoken words the actor would say
+- Occasional use of Emotion tags at the START of sentences (when needed): [happy], [sad], [angry], [surprised], [fearful], [disgusted]
+- No other emotional tags are supported or allowed to use such as [anxious]. PLEASE DO NOT USE UNSUPPORTED TAGS at any circumstances.
+
+Speaking style:
+- Keep responses short and conversational (1-2 sentences max)
+- Only answer what is specifically asked
+- Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
+- Speak like a real person, not like you're describing a scene.
+""".strip()
+
+# ==================== END CONFIGURATION ====================
 
 # ==================== ENVIRONMENT VALIDATION ====================
 def validate_environment():
@@ -64,17 +145,28 @@ def validate_environment():
 validate_environment()
 
 
-async def main(voice_id="Ashley", opening_line=None):
+def log_timing(message: str, **kwargs):
+    """Log timing information only in development mode"""
+    if ENABLE_TIMING:
+        logger.debug(f"TIMING: {message}", **kwargs)
+
+
+async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     """Main function to run the voice assistant bot.
 
     Args:
         voice_id: The Inworld TTS voice ID to use (default: "Ashley")
         opening_line: Custom opening line to speak when user joins (default: auto-generated)
+        system_prompt: Custom LLM system prompt (default: generic assistant prompt)
     """
     session = None
     transport = None
 
     try:
+        startup_time = time.perf_counter() if ENABLE_TIMING else None
+        if ENABLE_TIMING:
+            log_timing("voice_assistant_main_started", timestamp=datetime.utcnow().isoformat())
+
         logger.info("voice_assistant_starting", voice_id=voice_id, opening_line=opening_line)
 
         # Configure LiveKit connection
@@ -111,8 +203,28 @@ async def main(voice_id="Ashley", opening_line=None):
 
             # Create STT service (AssemblyAI)
             try:
-                stt = AssemblyAISTTService(api_key=os.getenv("ASSEMBLY_API_KEY"))
-                logger.info("assemblyai_stt_initialized")
+                stt = AssemblyAISTTService(
+                    api_key=os.getenv("ASSEMBLY_API_KEY"),
+                    connection_params=AssemblyAIConnectionParams(
+                        sample_rate=STT_SAMPLE_RATE,
+                        encoding=STT_ENCODING,
+                        model=STT_MODEL,
+                        format_turns=STT_FORMAT_TURNS,
+                        end_of_turn_confidence_threshold=STT_END_OF_TURN_CONFIDENCE,
+                        min_end_of_turn_silence_when_confident=STT_MIN_SILENCE_CONFIDENT,
+                        max_turn_silence=STT_MAX_TURN_SILENCE,
+                        enable_partial_transcripts=STT_ENABLE_PARTIALS,
+                        use_immutable_finals=STT_IMMUTABLE_FINALS,
+                        punctuate=STT_PUNCTUATE,
+                        format_text=STT_FORMAT_TEXT,
+                    ),
+                    vad_force_turn_endpoint=STT_VAD_FORCE_ENDPOINT,
+                    language=STT_LANGUAGE,
+                )
+                logger.info("assemblyai_stt_initialized",
+                           model=STT_MODEL,
+                           vad_endpoint=STT_VAD_FORCE_ENDPOINT,
+                           confidence_threshold=STT_END_OF_TURN_CONFIDENCE)
             except Exception as e:
                 logger.error("assemblyai_stt_initialization_failed", error=str(e), exc_info=True)
                 raise
@@ -121,9 +233,19 @@ async def main(voice_id="Ashley", opening_line=None):
             try:
                 llm = GroqLLMService(
                     api_key=os.getenv("GROQ_API_KEY"),
-                    model="llama-3.3-70b-versatile"
+                    model=LLM_MODEL,
+                    stream=LLM_STREAM,
+                    max_tokens=LLM_MAX_TOKENS,
+                    temperature=LLM_TEMPERATURE,
+                    top_p=LLM_TOP_P,
+                    presence_penalty=LLM_PRESENCE_PENALTY,
+                    frequency_penalty=LLM_FREQUENCY_PENALTY,
                 )
-                logger.info("groq_llm_initialized", model="llama-3.3-70b-versatile")
+                logger.info("groq_llm_initialized",
+                           model=LLM_MODEL,
+                           stream=LLM_STREAM,
+                           max_tokens=LLM_MAX_TOKENS,
+                           temperature=LLM_TEMPERATURE)
             except Exception as e:
                 logger.error("groq_llm_initialization_failed", error=str(e), exc_info=True)
                 raise
@@ -143,31 +265,66 @@ async def main(voice_id="Ashley", opening_line=None):
                 if not inworld_key:
                     raise ValueError("INWORLD_API_KEY is empty")
 
+                # Get voice-specific speed or use default
+                voice_speed = VOICE_SPEED_OVERRIDES.get(voice_id, TTS_DEFAULT_SPEED)
+
                 tts = InworldTTSService(
                     api_key=inworld_key,
                     aiohttp_session=session,
                     voice_id=voice_id,  # Configured via command-line or API
                     model="inworld-tts-1",
-                    streaming=True,
+                    streaming=TTS_STREAMING,
+                    params=InworldTTSService.InputParams(
+                        temperature=TTS_TEMPERATURE,
+                        speed=voice_speed
+                    ),
                 )
-                logger.info("inworld_tts_initialized", voice_id=voice_id, model="inworld-tts-1")
+                logger.info("inworld_tts_initialized",
+                           voice_id=voice_id,
+                           speed=voice_speed,
+                           temperature=TTS_TEMPERATURE,
+                           streaming=TTS_STREAMING)
             except Exception as e:
                 logger.error("inworld_tts_initialization_failed", error=str(e), exc_info=True)
                 raise
 
         # Create conversation context
+        # Use custom system prompt or default
+        default_system_prompt = "You are a helpful AI voice assistant."
+        base_prompt = system_prompt or default_system_prompt
+
+        # ALWAYS append critical rules to system prompt (static, non-negotiable)
+        full_system_prompt = f"{base_prompt}\n\n{CRITICAL_RULES}"
+
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful LLM in a WebRTC call. "
-                "Your goal is to demonstrate your capabilities in a succinct way. "
-                "Your output will be converted to audio so don't include special characters in your answers. "
-                "Respond to what the user said in a creative and helpful way.",
+                "content": full_system_prompt,
             },
         ]
 
+        logger.info("system_prompt_configured",
+                   custom_prompt=bool(system_prompt),
+                   prompt_length=len(full_system_prompt),
+                   critical_rules_appended=True)
+
+        # Add opening line to conversation history so LLM remembers it
+        if opening_line:
+            messages.append({
+                "role": "assistant",
+                "content": opening_line
+            })
+
         context = LLMContext(messages)
         context_aggregator = LLMContextAggregatorPair(context)
+
+        # Configure context aggregator timeouts
+        context_aggregator.aggregation_timeout = AGGREGATION_TIMEOUT
+        context_aggregator.bot_interruption_timeout = BOT_INTERRUPTION_TIMEOUT
+
+        logger.info("context_aggregator_configured",
+                   aggregation_timeout=AGGREGATION_TIMEOUT,
+                   interruption_timeout=BOT_INTERRUPTION_TIMEOUT)
 
         # Build pipeline
         pipeline = Pipeline(
@@ -194,16 +351,56 @@ async def main(voice_id="Ashley", opening_line=None):
         # participant joins.
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant_id):
+            event_start = time.perf_counter() if ENABLE_TIMING else None
+
             try:
                 logger.info("participant_joined", participant_id=participant_id)
-                await asyncio.sleep(1)
+
+                # Track conversation start time (for billing)
+                redis_start = time.perf_counter() if ENABLE_TIMING else None
+                conversation_start_time = int(time.time())
+                try:
+                    redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+                    redis_client = redis.from_url(redis_url)
+                    redis_client.hset(f'session:{room_name}',
+                                     'conversationStartTime',
+                                     conversation_start_time)
+                    if ENABLE_TIMING and redis_start:
+                        log_timing("redis_operation_complete",
+                                 duration_ms=f"{(time.perf_counter() - redis_start) * 1000:.1f}")
+                    logger.info("conversation_start_time_tracked", start_time=conversation_start_time)
+                except Exception as redis_error:
+                    logger.error("redis_start_time_tracking_failed", error=str(redis_error))
+
+                # Pipeline stabilization delay (reduced from 1.0s to 0.2s)
+                sleep_start = time.perf_counter() if ENABLE_TIMING else None
+
+                await asyncio.sleep(PARTICIPANT_GREETING_DELAY)
+
+                if ENABLE_TIMING and sleep_start:
+                    log_timing("sleep_complete",
+                             duration_ms=f"{(time.perf_counter() - sleep_start) * 1000:.1f}")
 
                 # Use custom opening line or default
                 greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant. How can I help you today?"
 
+                if ENABLE_TIMING:
+                    log_timing("greeting_prepared", greeting_length=len(greeting))
+                    queue_start = time.perf_counter()
+                else:
+                    queue_start = None
+
                 await task.queue_frame(
                     TTSSpeakFrame(greeting)
                 )
+
+                if ENABLE_TIMING and queue_start and event_start:
+                    queue_duration = (time.perf_counter() - queue_start) * 1000
+                    total_duration = (time.perf_counter() - event_start) * 1000
+                    log_timing("opening_line_queued",
+                             queue_duration_ms=f"{queue_duration:.1f}",
+                             total_handler_duration_ms=f"{total_duration:.1f}")
+
                 logger.info("opening_line_sent", greeting_preview=greeting[:50])
             except Exception as e:
                 logger.error("participant_join_handler_error", error=str(e), exc_info=True)
@@ -247,6 +444,29 @@ async def main(voice_id="Ashley", opening_line=None):
         logger.error("fatal_error", error=str(e), exc_info=True)
         raise
     finally:
+        # Track conversation end time and duration (for billing)
+        try:
+            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+            redis_client = redis.from_url(redis_url)
+
+            start_time = redis_client.hget(f'session:{room_name}', 'conversationStartTime')
+            if start_time:
+                start_time = int(start_time)
+                end_time = int(time.time())
+                duration_seconds = end_time - start_time
+                duration_minutes = math.ceil(duration_seconds / 60)  # Round up for billing
+
+                redis_client.hset(f'session:{room_name}', mapping={
+                    'conversationDuration': duration_seconds,
+                    'conversationDurationMinutes': duration_minutes
+                })
+
+                logger.info("conversation_duration_tracked",
+                           duration_seconds=duration_seconds,
+                           duration_minutes=duration_minutes)
+        except Exception as duration_error:
+            logger.error("duration_tracking_failed", error=str(duration_error))
+
         # Clean up resources
         logger.info("cleanup_started")
         if session and not session.closed:
@@ -278,6 +498,8 @@ if __name__ == "__main__":
                         help='Inworld TTS voice ID (default: Ashley)')
     parser.add_argument('--opening-line', type=str, default=None,
                         help='Custom opening line to speak when user joins')
+    parser.add_argument('--system-prompt', type=str, default=None,
+                        help='Custom LLM system prompt (optional)')
     parser.add_argument('--room', type=str, help='LiveKit room name (passed to configure)')
 
     args = parser.parse_args()
@@ -285,7 +507,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main(
             voice_id=args.voice_id,
-            opening_line=args.opening_line
+            opening_line=args.opening_line,
+            system_prompt=args.system_prompt
         ))
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt_shutdown")

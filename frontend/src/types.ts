@@ -27,4 +27,5 @@ export interface VoiceOption {
 export interface VoiceSettings {
   voiceId: string;
   openingLine: string;
+  systemPrompt?: string;
 }

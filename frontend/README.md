@@ -1,314 +1,204 @@
-# Voice Agent - Frontend
+# Frontend - Voice Agent Development UI
 
-Development interface for the LiveKit voice agent with comprehensive logging.
-
-## Overview
-
-This frontend provides a clean, streamlined interface for testing the voice agent. It focuses on core functionality with comprehensive logging and debugging tools.
+Simple React interface for testing the voice agent.
 
 ## Features
 
-### Core Functionality
-- ✅ Connect to LiveKit voice agent
-- ✅ Start/stop voice sessions
-- ✅ Real-time audio transmission
-- ✅ Connection status display
-- ✅ Session management
+- Connect to LiveKit voice agent
+- Start/stop voice sessions
+- Real-time audio transmission
+- Voice selection (6 voices with speed indicators)
+- Custom opening line and system prompt inputs
+- Real-time structured logs with filters
+- Session status display
 
-### Voice Customization
-- Simple voice selection dropdown (3 Inworld voices)
-- Custom opening line input
-- Reset to defaults button
+## Tech Stack
 
-### Logging System
-- **Console Logging**: Color-coded logs (debug=gray, info=blue, warn=orange, error=red)
-- **UI Display Panel**: Real-time log viewer in DevTools
-- **Filtering**: Filter logs by level (All/Debug/Info/Warn/Error)
-- **Session Correlation**: All logs tagged with sessionId
-- **Actions**: Copy logs, clear logs
+- React 18 + TypeScript
+- Vite (build tool)
+- LiveKit Components React
+- LiveKit Client SDK
 
 ## Quick Start
 
-### Prerequisites
-- Node.js 18+ and npm
-- Backend orchestrator running on port 8000
-- LiveKit server configured
-
-### Installation
-
 ```bash
-cd frontend
+# Install dependencies
 npm install
-```
 
-### Development
-
-```bash
+# Start dev server
 npm run dev
 ```
 
-The app will be available at **http://localhost:3000**
+Access: http://localhost:3000
+Backend API: http://localhost:8000 (default)
 
-### Build for Production
+## Configuration
+
+Set backend URL via environment variable:
 
 ```bash
-npm run build
-npm run preview
-```
-
-## Environment Configuration
-
-The frontend requires one environment variable to connect to the backend:
-
-**`VITE_API_URL`** - URL of the backend orchestrator service
-
-### Local Development
-
-The frontend defaults to `http://localhost:8000` if `VITE_API_URL` is not set.
-
-Optionally create a `.env` file:
-
-```env
+# .env
 VITE_API_URL=http://localhost:8000
 ```
 
-Or export the variable:
-
+Or in Railway:
 ```bash
-export VITE_API_URL=http://localhost:8000
-npm run dev
+VITE_API_URL=https://your-backend.railway.app
 ```
 
-### Railway/Cloud Deployment
-
-Set `VITE_API_URL` in your platform's environment variables:
-
-```bash
-# Railway example
-railway variables set VITE_API_URL=https://your-backend.railway.app
-
-# Or in Railway dashboard:
-# VITE_API_URL=https://your-backend.railway.app
-```
-
-## Architecture
-
-| Metric | Value |
-|--------|-------|
-| **Lines of Code** | ~670 TS/TSX, ~400 CSS |
-| **Dependencies** | 5 runtime deps |
-| **Bundle Size** | ~250KB (~80KB gzipped) |
-
-### File Structure
+## Project Structure
 
 ```
 frontend/
-├── index.html                 # Entry HTML
-├── package.json               # Dependencies
-├── vite.config.ts             # Vite configuration
-├── tsconfig.json              # TypeScript config
-└── src/
-    ├── main.tsx               # React entry point
-    ├── App.tsx                # Main component (~250 lines)
-    ├── VoiceSettings.tsx      # Voice customization (~95 lines)
-    ├── DevTools.tsx           # Log display panel (~164 lines)
-    ├── logger.ts              # Logging utility (~121 lines)
-    ├── types.ts               # TypeScript types (~30 lines)
-    └── styles.css             # Styling (~400 lines)
+├── src/
+│   ├── main.tsx           # Entry point
+│   ├── App.tsx            # Main component (~250 lines)
+│   ├── VoiceSettings.tsx  # Voice selector (~95 lines)
+│   ├── DevTools.tsx       # Log viewer (~164 lines)
+│   ├── logger.ts          # Logging utility (~121 lines)
+│   ├── types.ts           # TypeScript types (~30 lines)
+│   └── styles.css         # Styles (~400 lines)
+├── index.html
+├── package.json
+└── vite.config.ts
 ```
 
-### Component Hierarchy
+## Components
 
-```
-App
-├── Header
-│   └── ConnectionStatus
-├── Main
-│   ├── VoiceSettings (collapsible)
-│   │   ├── Voice Dropdown
-│   │   └── Opening Line Input
-│   └── LiveKitRoom
-│       └── RoomContent
-│           ├── ConnectionStateIndicator
-│           └── End Session Button
-└── DevTools (collapsible)
-    ├── Log Filters
-    ├── Actions (Copy/Clear)
-    └── Log Display
-```
+### App.tsx
+Main component handling:
+- Session lifecycle (start/end)
+- LiveKit room connection
+- Connection state management
+- Error handling
+
+### VoiceSettings.tsx
+Voice configuration panel:
+- Voice dropdown (6 voices)
+- Opening line input
+- System prompt input
+- Reset button
+
+Available voices:
+- Ashley (Default) - Female
+- Craig (Fast) - Male
+- Edward - Male
+- Olivia - Female
+- Wendy (Fast) - Female
+- Priya (Asian) - Female
+
+### DevTools.tsx
+Log viewer panel:
+- Real-time log display
+- Filter by level (All/Debug/Info/Warn/Error)
+- Auto-scroll to latest
+- Copy/clear logs
+- Session ID display
+
+### logger.ts
+Structured logging:
+- Color-coded console output
+- Session ID correlation
+- Event emission for UI updates
+- Log storage (last 100 entries)
 
 ## Usage
 
-### Starting a Session
+1. **Start Backend**
+```bash
+# In project root
+make dev
+```
 
-1. **(Optional)** Expand Voice Settings panel
-2. **(Optional)** Select a voice from the dropdown:
-   - Alex - Energetic male, mid-range
-   - Ashley - Warm, natural female (default)
-   - Dennis - Smooth, calm male
-3. **(Optional)** Customize the opening line
-4. Click **"Start Session"**
-5. Grant microphone permissions if prompted
-6. Start speaking when "Connected" status appears
+2. **Start Frontend**
+```bash
+cd frontend
+npm run dev
+```
 
-### Using DevTools
+3. **Test**
+   - Visit: http://localhost:3000
+   - (Optional) Select voice in Voice Settings
+   - Click "Start Session"
+   - Grant microphone permissions
+   - Speak to agent
+   - View logs in DevTools
+   - Click "End Session"
 
-- **Expand/Collapse**: Click the "DevTools" header
-- **Filter Logs**: Click level buttons (All/Debug/Info/Warn/Error)
-- **Copy Logs**: Click "Copy" button to copy filtered logs to clipboard
-- **Clear Logs**: Click "Clear" button to remove all logs
+## Development
 
-### Ending a Session
+### Adding Voices
 
-- Click **"End Session"** button
-- Session will be terminated and resources cleaned up
+**Frontend** (`src/VoiceSettings.tsx`):
+```typescript
+const availableVoices = [
+  { id: 'Ashley', name: 'Ashley (Default)' },
+  { id: 'YourVoice', name: 'Your Voice Name' },  // Add here
+];
+```
 
-## API Endpoints
+**Backend** (`backend/agent/voice_assistant.py`):
+```python
+VOICE_SPEED_OVERRIDES = {
+    "Ashley": 1.0,
+    "YourVoice": 1.0,  # Add here with desired speed
+}
+```
 
-The frontend connects to these orchestrator endpoints:
+### Customizing Logging
 
-- `POST /orchestrator/session/start` - Create new voice session
-  - Body: `{ userName, voiceId, openingLine }`
-  - Returns: `{ success, sessionId, token, serverUrl, roomName, message }`
+Edit `src/logger.ts`:
+- Maximum stored logs (default: 100)
+- Console colors
+- Log event format
 
-- `POST /orchestrator/session/end` - End active session
-  - Body: `{ sessionId }`
-  - Returns: `{ success, message, details }`
+### Styling
+
+All styles in `src/styles.css`:
+- No CSS modules
+- Flat structure
+- Easy to modify
+
+## Build for Production
+
+```bash
+npm run build
+# Output: dist/
+
+npm run preview
+```
 
 ## Troubleshooting
 
 ### Backend Connection Errors
 
-**Error:** `Failed to start session: fetch failed`
+**Issue:** `Failed to fetch`
 
-**Solution:** Ensure orchestrator is running on port 8000:
+**Fix:**
+- Verify `VITE_API_URL` is set
+- Check backend running: `curl http://localhost:8000/health`
 
-```bash
-curl http://localhost:8000/
-docker-compose up orchestrator
-```
+### No Audio
 
-### Microphone Permission Issues
+**Issue:** Microphone blocked
 
-**Error:** Browser blocks microphone access
-
-**Solution:**
+**Fix:**
 - Use HTTPS or localhost
 - Check browser microphone permissions
-- Ensure no other app is using the microphone
+- Ensure no other app using microphone
 
-### LiveKit Connection Fails
+### Build Errors
 
-**Error:** `LiveKit error: connection failed`
+**Issue:** TypeScript errors
 
-**Solution:**
-- Verify LiveKit credentials in `.env`
-- Check LiveKit server is accessible
-- Review DevTools logs for details
-
-### Voice TTS Errors
-
-**Error:** `Unknown voice: [voiceId] not found`
-
-**Solution:**
-- Use correct Inworld voice IDs: `Alex`, `Ashley`, or `Dennis`
-- Do NOT use prefixes like `inworld-` or `elevenlabs-`
-
-## Development
-
-### Adding More Voices
-
-Edit `src/VoiceSettings.tsx`:
-
-```typescript
-const availableVoices = [
-  { id: 'Alex', name: 'Alex - Energetic male, mid-range' },
-  { id: 'Ashley', name: 'Ashley - Warm, natural female' },
-  { id: 'Dennis', name: 'Dennis - Smooth, calm male' },
-  { id: 'YourVoice', name: 'Your Voice Name' },
-];
-```
-
-### Customizing Logging
-
-See `src/logger.ts` to adjust:
-- Maximum stored logs (default: 100)
-- Console colors
-- Log event format
-
-### Changing Styles
-
-All styles are in `src/styles.css`:
-- No CSS modules or styled-components
-- Simple, flat structure
-- Easy to modify
-
-## Design Philosophy
-
-This frontend prioritizes:
-- **Simplicity** over feature completeness
-- **Developer experience** over polish
-- **Debugging** over production features
-- **Clarity** over abstraction
-
-## Docker Deployment
-
-### Local Development (docker-compose)
-
-The frontend is included in the main docker-compose setup:
-
+**Fix:**
 ```bash
-# From project root
-docker-compose up --build
-
-# Or use Makefile shortcuts
-make dev      # Development mode with logs
-make up       # Detached mode
-make down     # Stop services
-make logs     # View logs
-
-# Frontend will be at http://localhost:3000
-# Backend at http://localhost:8000
+rm -rf node_modules package-lock.json
+npm install
 ```
 
-### Docker Build Details
+## Next Steps
 
-The frontend Dockerfile uses a **multi-stage build**:
-
-1. **Builder stage** (node:18-alpine):
-   - Installs dependencies
-   - Builds production bundle with Vite
-   - Optimizes assets
-
-2. **Production stage** (node:18-alpine):
-   - Serves static files with `serve`
-   - Lightweight runtime (~40MB total)
-   - Listens on port specified by `$PORT` (default: 3000)
-
-**Build Context**: Repository root (`.`) - this allows the Dockerfile to copy from `frontend/` subdirectory.
-
-```bash
-# Manual build from project root
-docker build -f frontend/Dockerfile -t frontend:latest .
-
-# Run container
-docker run -p 3000:3000 \
-  -e VITE_API_URL=http://localhost:8000 \
-  frontend:latest
-```
-
-### Railway Deployment
-
-**Configuration:**
-- Root Directory: `/`
-- Dockerfile Path: `/frontend/Dockerfile`
-- Builder: Dockerfile
-
-**Environment Variables:**
-- `VITE_API_URL` - Set to your backend service URL
-
-See `../RAILWAY_DEPLOYMENT.md` for complete setup guide.
-
-## License
-
-Part of the LiveKit Voice Agent project.
+- [API Reference](../backend/API.md)
+- [Configuration Options](../CONFIGURATION.md)
+- [Deployment Guide](../DEPLOYMENT.md)

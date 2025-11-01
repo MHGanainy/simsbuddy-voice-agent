@@ -48,9 +48,6 @@ services:
       SESSION_TIMEOUT: 1800000
       BOT_STARTUP_TIMEOUT: 30
 
-      # Pre-warm pool config (0 = on-demand only, no prewarm)
-      PREWARM_POOL_SIZE: 0
-
       # Python script path (updated for new structure)
       PYTHON_SCRIPT_PATH: /app/backend/agent/voice_assistant.py
 
@@ -74,7 +71,7 @@ services:
       - voice-agent-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/orchestrator/health"]
       interval: 30s
       timeout: 10s
       retries: 3
