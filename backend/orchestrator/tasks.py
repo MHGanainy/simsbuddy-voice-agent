@@ -495,10 +495,11 @@ def cleanup_stale_agents():
 
 # Beat Schedule Configuration
 app.conf.beat_schedule = {
-    'prewarm-pool-every-30s': {
-        'task': 'prewarm_agent_pool',
-        'schedule': 30.0,  # Every 30 seconds
-    },
+    # Prewarm pool disabled - using on-demand agent creation only
+    # 'prewarm-pool-every-30s': {
+    #     'task': 'prewarm_agent_pool',
+    #     'schedule': 30.0,  # Every 30 seconds
+    # },
     'health-check-every-60s': {
         'task': 'health_check_agents',
         'schedule': 60.0,  # Every 60 seconds
