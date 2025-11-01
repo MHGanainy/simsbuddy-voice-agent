@@ -110,7 +110,6 @@ jobs:
         run: npm run build
         env:
           VITE_API_URL: https://staging-backend.railway.app
-          VITE_ORCHESTRATOR_URL: https://staging-backend.railway.app
 
       - name: Check build output
         working-directory: frontend

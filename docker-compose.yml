@@ -89,13 +89,11 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-        VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     container_name: voice-agent-frontend
     ports:
       - "3000:3000"
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-      VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8000}
     depends_on:
       - orchestrator
     networks:

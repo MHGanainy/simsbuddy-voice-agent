@@ -4,11 +4,9 @@ FROM node:18-alpine as builder
 # Build stage
 WORKDIR /app
 
-# Accept API URLs as build arguments (Railway will inject these)
+# Accept API URL as build argument (Railway will inject this)
 ARG VITE_API_URL
-ARG VITE_ORCHESTRATOR_URL
 ENV VITE_API_URL=$VITE_API_URL
-ENV VITE_ORCHESTRATOR_URL=$VITE_ORCHESTRATOR_URL
 
 # Copy from frontend directory (Railway context is repo root)
 COPY frontend/package.json frontend/package-lock.json ./

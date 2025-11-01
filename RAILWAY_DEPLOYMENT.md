@@ -263,8 +263,7 @@ railway service frontend
 
 # Set frontend variables
 railway variables set \
-  VITE_API_URL="https://orchestrator-staging.railway.app" \
-  VITE_ORCHESTRATOR_URL="https://orchestrator-staging.railway.app"
+  VITE_API_URL="https://orchestrator-staging.railway.app"
 ```
 
 **Note:** Replace with your actual backend Railway URL once deployed.
