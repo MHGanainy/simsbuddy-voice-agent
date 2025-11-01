@@ -61,7 +61,7 @@ logs/
 htmlcov/
 test-results/
 
-# Docker (not needed on Railway)
+# Docker (exclude docker-compose, but keep Dockerfiles)
 docker-compose.yml
-docker/
-Dockerfile
+docker/Dockerfile.frontend
+# Keep docker/Dockerfile.backend for Railway build
