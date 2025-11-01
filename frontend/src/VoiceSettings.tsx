@@ -15,11 +15,14 @@ interface VoiceSettingsProps {
 export default function VoiceSettings({ settings, onSettingsChange }: VoiceSettingsProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Available Inworld TTS voices
+  // Available Inworld TTS voices (configured with speed optimization)
   const availableVoices = [
-    { id: 'Alex', name: 'Alex - Energetic male, mid-range' },
-    { id: 'Ashley', name: 'Ashley - Warm, natural female' },
-    { id: 'Dennis', name: 'Dennis - Smooth, calm male' },
+    { id: 'Ashley', name: 'Ashley (Default) - Warm, natural female' },
+    { id: 'Craig', name: 'Craig (Fast) - Professional male' },
+    { id: 'Edward', name: 'Edward - Smooth, natural male' },
+    { id: 'Olivia', name: 'Olivia - Clear, professional female' },
+    { id: 'Wendy', name: 'Wendy (Fast) - Energetic female' },
+    { id: 'Priya', name: 'Priya (Asian) - Warm, clear female' },
   ];
 
   const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {

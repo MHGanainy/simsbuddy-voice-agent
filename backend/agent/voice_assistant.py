@@ -32,7 +32,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.runner.livekit import configure
 from pipecat.services.inworld.tts import InworldTTSService
-from pipecat.services.assemblyai.stt import AssemblyAISTTService
+from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
@@ -40,6 +40,79 @@ load_dotenv(override=True)
 
 # Setup logging
 logger = setup_logging(service_name='voice-agent')
+
+# ==================== AGENT CONFIGURATION ====================
+# Adjust these parameters to tune the voice agent behavior
+
+# Context Aggregator Settings
+AGGREGATION_TIMEOUT = 0.2  # How long to wait for complete responses
+BOT_INTERRUPTION_TIMEOUT = 0.2  # How quickly bot can be interrupted
+
+# TTS Configuration (Inworld)
+TTS_STREAMING = True
+TTS_TEMPERATURE = 1.1  # Voice expressiveness (0.0-2.0)
+TTS_DEFAULT_SPEED = 1.0  # Default speech rate
+
+# Voice-specific speed overrides
+VOICE_SPEED_OVERRIDES = {
+    "Craig": 1.2,    # Male, faster
+    "Edward": 1.0,   # Male, normal
+    "Olivia": 1.0,   # Female, normal
+    "Wendy": 1.2,    # Female, faster
+    "Priya": 1.0,    # Asian accent Female, normal
+    "Ashley": 1.0,   # Default voice
+}
+
+# STT Configuration (AssemblyAI)
+STT_SAMPLE_RATE = 16000
+STT_ENCODING = "pcm_s16le"
+STT_MODEL = "universal-streaming"
+STT_FORMAT_TURNS = False
+STT_END_OF_TURN_CONFIDENCE = 0.70
+STT_MIN_SILENCE_CONFIDENT = 50  # milliseconds
+STT_MAX_TURN_SILENCE = 200  # milliseconds
+STT_ENABLE_PARTIALS = True
+STT_IMMUTABLE_FINALS = True
+STT_PUNCTUATE = False
+STT_FORMAT_TEXT = False
+STT_VAD_FORCE_ENDPOINT = True
+STT_LANGUAGE = "en"
+
+# LLM Configuration (Groq)
+LLM_MODEL = "llama-3.3-70b-versatile"
+LLM_STREAM = True  # Enable streaming for lower latency
+LLM_MAX_TOKENS = 100
+LLM_TEMPERATURE = 0.6
+LLM_TOP_P = 0.8
+LLM_PRESENCE_PENALTY = 0.15
+LLM_FREQUENCY_PENALTY = 0.30
+
+# Critical Rules (appended to all system prompts - STATIC)
+CRITICAL_RULES = """
+CRITICAL RULES:
+You are roleplaying. Everything you write will be spoken aloud by a text-to-speech system, so follow these rules strictly:
+
+Keep answers short and only answer when asked about a specific point; do not provide unrequested information.
+
+NEVER include:
+- Stage directions like "looks anxious," "appears worried," "seems uncomfortable"
+- Actions in asterisks like *sighs*, *pauses*, *fidgets*
+- Any descriptive text about body language or appearance
+- Brackets except for the emotion tags below
+
+ONLY output accepted:
+- Actual spoken words the actor would say
+- Occasional use of Emotion tags at the START of sentences (when needed): [happy], [sad], [angry], [surprised], [fearful], [disgusted]
+- No other emotional tags are supported or allowed to use such as [anxious]. PLEASE DO NOT USE UNSUPPORTED TAGS at any circumstances.
+
+Speaking style:
+- Keep responses short and conversational (1-2 sentences max)
+- Only answer what is specifically asked
+- Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
+- Speak like a real person, not like you're describing a scene.
+""".strip()
+
+# ==================== END CONFIGURATION ====================
 
 # ==================== ENVIRONMENT VALIDATION ====================
 def validate_environment():
@@ -115,8 +188,28 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
             # Create STT service (AssemblyAI)
             try:
-                stt = AssemblyAISTTService(api_key=os.getenv("ASSEMBLY_API_KEY"))
-                logger.info("assemblyai_stt_initialized")
+                stt = AssemblyAISTTService(
+                    api_key=os.getenv("ASSEMBLY_API_KEY"),
+                    connection_params=AssemblyAIConnectionParams(
+                        sample_rate=STT_SAMPLE_RATE,
+                        encoding=STT_ENCODING,
+                        model=STT_MODEL,
+                        format_turns=STT_FORMAT_TURNS,
+                        end_of_turn_confidence_threshold=STT_END_OF_TURN_CONFIDENCE,
+                        min_end_of_turn_silence_when_confident=STT_MIN_SILENCE_CONFIDENT,
+                        max_turn_silence=STT_MAX_TURN_SILENCE,
+                        enable_partial_transcripts=STT_ENABLE_PARTIALS,
+                        use_immutable_finals=STT_IMMUTABLE_FINALS,
+                        punctuate=STT_PUNCTUATE,
+                        format_text=STT_FORMAT_TEXT,
+                    ),
+                    vad_force_turn_endpoint=STT_VAD_FORCE_ENDPOINT,
+                    language=STT_LANGUAGE,
+                )
+                logger.info("assemblyai_stt_initialized",
+                           model=STT_MODEL,
+                           vad_endpoint=STT_VAD_FORCE_ENDPOINT,
+                           confidence_threshold=STT_END_OF_TURN_CONFIDENCE)
             except Exception as e:
                 logger.error("assemblyai_stt_initialization_failed", error=str(e), exc_info=True)
                 raise
@@ -125,9 +218,19 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             try:
                 llm = GroqLLMService(
                     api_key=os.getenv("GROQ_API_KEY"),
-                    model="llama-3.3-70b-versatile"
+                    model=LLM_MODEL,
+                    stream=LLM_STREAM,
+                    max_tokens=LLM_MAX_TOKENS,
+                    temperature=LLM_TEMPERATURE,
+                    top_p=LLM_TOP_P,
+                    presence_penalty=LLM_PRESENCE_PENALTY,
+                    frequency_penalty=LLM_FREQUENCY_PENALTY,
                 )
-                logger.info("groq_llm_initialized", model="llama-3.3-70b-versatile")
+                logger.info("groq_llm_initialized",
+                           model=LLM_MODEL,
+                           stream=LLM_STREAM,
+                           max_tokens=LLM_MAX_TOKENS,
+                           temperature=LLM_TEMPERATURE)
             except Exception as e:
                 logger.error("groq_llm_initialization_failed", error=str(e), exc_info=True)
                 raise
@@ -147,14 +250,25 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 if not inworld_key:
                     raise ValueError("INWORLD_API_KEY is empty")
 
+                # Get voice-specific speed or use default
+                voice_speed = VOICE_SPEED_OVERRIDES.get(voice_id, TTS_DEFAULT_SPEED)
+
                 tts = InworldTTSService(
                     api_key=inworld_key,
                     aiohttp_session=session,
                     voice_id=voice_id,  # Configured via command-line or API
                     model="inworld-tts-1",
-                    streaming=True,
+                    streaming=TTS_STREAMING,
+                    params=InworldTTSService.InputParams(
+                        temperature=TTS_TEMPERATURE,
+                        speed=voice_speed
+                    ),
                 )
-                logger.info("inworld_tts_initialized", voice_id=voice_id, model="inworld-tts-1")
+                logger.info("inworld_tts_initialized",
+                           voice_id=voice_id,
+                           speed=voice_speed,
+                           temperature=TTS_TEMPERATURE,
+                           streaming=TTS_STREAMING)
             except Exception as e:
                 logger.error("inworld_tts_initialization_failed", error=str(e), exc_info=True)
                 raise
@@ -162,14 +276,22 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # Create conversation context
         # Use custom system prompt or default
         default_system_prompt = "You are a helpful AI voice assistant."
-        prompt_to_use = system_prompt or default_system_prompt
+        base_prompt = system_prompt or default_system_prompt
+
+        # ALWAYS append critical rules to system prompt (static, non-negotiable)
+        full_system_prompt = f"{base_prompt}\n\n{CRITICAL_RULES}"
 
         messages = [
             {
                 "role": "system",
-                "content": prompt_to_use,
+                "content": full_system_prompt,
             },
         ]
+
+        logger.info("system_prompt_configured",
+                   custom_prompt=bool(system_prompt),
+                   prompt_length=len(full_system_prompt),
+                   critical_rules_appended=True)
 
         # Add opening line to conversation history so LLM remembers it
         if opening_line:
@@ -180,6 +302,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         context = LLMContext(messages)
         context_aggregator = LLMContextAggregatorPair(context)
+
+        # Configure context aggregator timeouts
+        context_aggregator.aggregation_timeout = AGGREGATION_TIMEOUT
+        context_aggregator.bot_interruption_timeout = BOT_INTERRUPTION_TIMEOUT
+
+        logger.info("context_aggregator_configured",
+                   aggregation_timeout=AGGREGATION_TIMEOUT,
+                   interruption_timeout=BOT_INTERRUPTION_TIMEOUT)
 
         # Build pipeline
         pipeline = Pipeline(
