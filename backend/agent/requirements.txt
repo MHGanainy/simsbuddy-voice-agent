@@ -1,5 +1,5 @@
 # Voice agent dependencies (Pipecat + AI services)
-pipecat-ai[livekit]==0.0.85
+pipecat-ai[livekit,inworld]==0.0.92
 assemblyai==0.44.3
 groq==0.9.0
 onnxruntime
