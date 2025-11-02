@@ -163,17 +163,19 @@ class TranscriptStorage:
         logger.info(f"TranscriptStorage initialized for session {session_id[:20]}...")
 
     def add_message(self, role: str, content: str, timestamp: str = None):
-        """Add a transcript message"""
+        """Add a transcript message - formats to match backend schema"""
         if timestamp is None:
             timestamp = datetime.utcnow().isoformat()
 
+        # Map role to speaker format expected by backend
+        speaker = "student" if role == "user" else "ai_patient"
+
         self.transcripts.append({
-            "role": role,
-            "content": content,
-            "timestamp": timestamp,
-            "sequence": len(self.transcripts)
+            "message": content,
+            "speaker": speaker,
+            "timestamp": timestamp
         })
-        logger.debug(f"Captured {role} message #{len(self.transcripts)} for {self.session_id[:20]}...")
+        logger.debug(f"Captured {speaker} message #{len(self.transcripts)} for {self.session_id[:20]}...")
 
     def get_transcript_data(self):
         """Get formatted transcript data for database storage"""
@@ -604,8 +606,11 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 # Get transcript data
                 transcript_data = transcript_storage.get_transcript_data()
 
+                # Get duration in minutes (for database)
+                duration_mins = duration_minutes if 'duration_minutes' in locals() else 0
+
                 # Save to database
-                success = await Database.save_transcript(room_name, transcript_data)
+                success = await Database.save_transcript(room_name, transcript_data, duration_mins)
 
                 if success:
                     logger.info(f"✅ Transcripts saved successfully for session {room_name}",
