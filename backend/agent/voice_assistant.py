@@ -558,7 +558,8 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             except Exception as e:
                 logger.error("data_received_handler_error", error=str(e), exc_info=True)
 
-        runner = PipelineRunner()
+        # Disable PipelineRunner's built-in signal handling so our finally block can execute
+        runner = PipelineRunner(handle_sigint=False)
 
         logger.info("pipeline_runner_starting")
         await runner.run(task)
