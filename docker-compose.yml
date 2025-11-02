@@ -43,6 +43,9 @@ services:
       ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
       INWORLD_API_KEY: ${INWORLD_API_KEY}
 
+      # Database (for transcript storage)
+      DATABASE_URL: ${DATABASE_URL}
+
       # Orchestrator config
       MAX_BOTS: 50
       SESSION_TIMEOUT: 1800000
