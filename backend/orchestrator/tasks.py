@@ -437,7 +437,7 @@ def cleanup_stale_agents():
                 if pid:
                     try:
                         os.killpg(int(pid), signal.SIGTERM)  # Kill entire process group
-                        time.sleep(2)
+                        time.sleep(5)  # Wait 5 seconds for graceful shutdown (transcript save)
                         # Force kill if still alive
                         try:
                             os.killpg(int(pid), signal.SIGKILL)  # Force kill process group

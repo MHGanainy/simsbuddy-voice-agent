@@ -270,8 +270,9 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                     cleanup_details["process_killed"] = True
                     cleanup_details["pgid"] = pgid
 
-                    # Wait 2 seconds for graceful shutdown (async to avoid blocking)
-                    await asyncio.sleep(2)
+                    # Wait 5 seconds for graceful shutdown (async database operations need time)
+                    # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
+                    await asyncio.sleep(5)
 
                     # Check if still alive, send SIGKILL
                     try:
