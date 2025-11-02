@@ -649,15 +649,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
 
 # ==================== GRACEFUL SHUTDOWN ====================
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    logger.warning("signal_received", signal=signum, action="graceful_shutdown")
-    sys.exit(0)
-
-
-# Register signal handlers
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+# Note: We rely on disconnect event handlers (on_participant_left, on_disconnected)
+# to trigger cleanup via task.cancel(). The finally block will execute naturally
+# when the pipeline completes. SIGTERM/SIGINT will interrupt the event loop,
+# allowing the finally block to run before exit.
 
 
 if __name__ == "__main__":
