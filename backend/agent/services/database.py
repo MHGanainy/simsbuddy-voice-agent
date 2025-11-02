@@ -44,16 +44,16 @@ class Database:
         return cls._pool
 
     @classmethod
-    async def save_transcript(cls, correlation_token: str, transcript_data: List[Dict], duration_minutes: int = 0) -> bool:
-        """Save transcript to simulation_attempts table in backend-compatible format"""
+    async def save_transcript(cls, correlation_token: str, transcript_data: List[Dict]) -> bool:
+        """Save transcript to simulation_attempts table"""
         try:
             pool = await cls.get_pool()
 
-            # Prepare transcript JSON in backend-compatible format
+            # Prepare transcript JSON
             transcript_json = {
-                "duration": duration_minutes,
-                "messages": transcript_data,  # Already formatted as {message, speaker, timestamp}
-                "totalMessages": len(transcript_data)
+                "messages": transcript_data,
+                "capturedAt": datetime.utcnow().isoformat(),
+                "version": "1.0"
             }
 
             # Update simulation_attempts record with transcript
