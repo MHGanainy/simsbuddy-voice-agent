@@ -257,6 +257,29 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                                   pgid=pgid,
                                   warning="Process may not be a group leader")
 
+                # First, give agent 3 seconds to self-terminate via disconnect handlers
+                # Agent's on_participant_left triggers task.cancel() which should cleanly exit
+                logger.info("cleanup_waiting_for_self_termination",
+                           session_id=session_id,
+                           pid=pid,
+                           wait_seconds=3)
+                await asyncio.sleep(3)
+
+                # Check if agent self-terminated
+                try:
+                    os.kill(pid, 0)  # Check if process exists
+                    logger.info("cleanup_agent_still_running_sending_sigterm",
+                               session_id=session_id,
+                               pid=pid)
+                except ProcessLookupError:
+                    logger.info("cleanup_agent_self_terminated",
+                               session_id=session_id,
+                               pid=pid)
+                    cleanup_details["process_killed"] = True
+                    cleanup_details["self_terminated"] = True
+                    # Agent already dead, skip SIGTERM
+                    return cleanup_details
+
                 logger.info("cleanup_killing_process",
                            session_id=session_id,
                            pid=pid,
@@ -264,13 +287,13 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                            is_group_leader=(pgid == pid if pgid else "unknown"),
                            signal="SIGTERM")
 
-                # Send SIGTERM to entire process group first
+                # Send SIGTERM to entire process group
                 try:
                     os.killpg(pid, signal.SIGTERM)  # Kill entire process group
                     cleanup_details["process_killed"] = True
                     cleanup_details["pgid"] = pgid
 
-                    # Wait 5 seconds for graceful shutdown (async database operations need time)
+                    # Wait additional 5 seconds for graceful shutdown (async database operations)
                     # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
                     await asyncio.sleep(5)
 
