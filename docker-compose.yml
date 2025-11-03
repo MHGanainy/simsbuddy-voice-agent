@@ -43,6 +43,9 @@ services:
       ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
       INWORLD_API_KEY: ${INWORLD_API_KEY}
 
+      # Database (for transcript storage)
+      DATABASE_URL: ${DATABASE_URL}
+
       # Orchestrator config
       MAX_BOTS: 50
       SESSION_TIMEOUT: 1800000
@@ -67,6 +70,8 @@ services:
       - ./backend:/app/backend
       # Voice agent logs (persistent storage)
       - voice-agent-logs:/var/log/voice-agents
+      # Docker socket for reading container logs in admin UI
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - voice-agent-network
     restart: unless-stopped

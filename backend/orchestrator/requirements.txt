@@ -3,3 +3,12 @@ celery==5.3.4
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 livekit-api
+
+# Database dependencies for credit billing
+asyncpg==0.29.0
+
+# Redis client for session management and billing idempotency
+redis==5.0.1
+
+# Environment configuration
+python-dotenv==1.0.0
