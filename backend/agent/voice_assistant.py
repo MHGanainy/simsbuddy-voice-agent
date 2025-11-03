@@ -11,11 +11,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 import aiohttp
 import redis
+import requests
 
 # Import structured logging
 from backend.common.logging_config import setup_logging, LogContext
 # Import database service for transcript storage
-from services.database import Database
+from backend.common.services import Database
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -182,6 +183,113 @@ class TranscriptStorage:
     def __len__(self):
         """Return the number of transcript entries"""
         return len(self.transcripts)
+
+
+async def heartbeat_task(session_id: str, transport=None, transcript_storage=None):
+    """
+    Send heartbeat to orchestrator every minute for credit billing.
+
+    Args:
+        session_id: The session/room name
+        transport: LiveKit transport (optional, for graceful shutdown)
+        transcript_storage: Transcript storage (optional, for saving before shutdown)
+    """
+    await asyncio.sleep(60)  # Wait for first minute to complete
+
+    while True:
+        try:
+            logger.info("heartbeat_sending", session_id=session_id)
+
+            # Get orchestrator URL from environment
+            orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
+
+            # Send heartbeat (synchronous request in async context)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    f"{orchestrator_url}/api/session/heartbeat",
+                    json={"sessionId": session_id},
+                    timeout=10
+                )
+            )
+
+            result = response.json()
+
+            if result.get("status") == "stop":
+                logger.warning(
+                    "heartbeat_stop_received",
+                    session_id=session_id,
+                    reason=result.get("reason", "insufficient_credits"),
+                    message=result.get("message")
+                )
+
+                # Save transcript before stopping
+                if transcript_storage and len(transcript_storage) > 0:
+                    try:
+                        logger.info("heartbeat_saving_transcript_before_stop",
+                                   session_id=session_id,
+                                   transcript_count=len(transcript_storage))
+
+                        transcript_data = transcript_storage.get_transcript_data()
+                        success = await Database.save_transcript(session_id, transcript_data)
+
+                        if success:
+                            logger.info("heartbeat_transcript_saved",
+                                       session_id=session_id,
+                                       transcript_count=len(transcript_data))
+                        else:
+                            logger.error("heartbeat_transcript_save_failed",
+                                        session_id=session_id)
+                    except Exception as save_error:
+                        logger.error("heartbeat_transcript_save_error",
+                                    session_id=session_id,
+                                    error=str(save_error))
+
+                # Close transport if available
+                if transport:
+                    try:
+                        await transport.close()
+                        logger.info("heartbeat_transport_closed", session_id=session_id)
+                    except Exception as close_error:
+                        logger.error("heartbeat_transport_close_error",
+                                    error=str(close_error))
+
+                # Exit the process (graceful shutdown)
+                logger.info("heartbeat_exiting_due_to_insufficient_credits",
+                           session_id=session_id)
+                sys.exit(0)
+
+            elif result.get("status") == "ok":
+                logger.info(
+                    "heartbeat_success",
+                    session_id=session_id,
+                    minute_billed=result.get("minute_billed"),
+                    credits_remaining=result.get("credits_remaining"),
+                    already_billed=result.get("already_billed", False)
+                )
+            else:
+                logger.error(
+                    "heartbeat_error",
+                    session_id=session_id,
+                    error=result.get("message")
+                )
+
+            # Wait 60 seconds before next heartbeat
+            await asyncio.sleep(60)
+
+        except asyncio.CancelledError:
+            logger.info("heartbeat_cancelled", session_id=session_id)
+            break
+        except Exception as e:
+            logger.error(
+                "heartbeat_exception",
+                session_id=session_id,
+                error=str(e),
+                exc_info=True
+            )
+            # Don't crash on heartbeat failure - just log and try again
+            await asyncio.sleep(60)
 
 
 async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
@@ -561,6 +669,12 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # Disable PipelineRunner's built-in signal handling so our finally block can execute
         runner = PipelineRunner(handle_sigint=False)
 
+        # Start heartbeat task in background for credit billing
+        logger.info("starting_heartbeat_task", session_id=room_name)
+        heartbeat_handle = asyncio.create_task(
+            heartbeat_task(room_name, transport, transcript_storage)
+        )
+
         logger.info("pipeline_runner_starting")
         await runner.run(task)
 
@@ -572,6 +686,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     finally:
         logger.info(f"Cleanup initiated for session {room_name}",
                    cleanup_triggered='cleanup_triggered' in locals() and cleanup_triggered)
+
+        # Cancel heartbeat task if it's running
+        if 'heartbeat_handle' in locals() and heartbeat_handle:
+            try:
+                heartbeat_handle.cancel()
+                logger.info("heartbeat_task_cancelled", session_id=room_name)
+            except Exception as hb_error:
+                logger.error("heartbeat_cancellation_failed", error=str(hb_error))
 
         # Track conversation end time and duration (for billing)
         try:

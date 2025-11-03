@@ -6,6 +6,7 @@ import { SessionResponse, VoiceSettings as VoiceSettingsType } from './types';
 import { logger } from './logger';
 import VoiceSettings from './VoiceSettings';
 import DevTools from './DevTools';
+import DevLogs from './DevLogs';
 import './styles.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -22,6 +23,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
  * - Fixed: Duplicate end session calls with refs
  */
 export default function App() {
+  const [showDevLogs, setShowDevLogs] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string | null>(null);
@@ -163,11 +165,55 @@ export default function App() {
     };
   }, []); // Empty dependency array - only run on unmount
 
+  // Show DevLogs if toggled
+  if (showDevLogs) {
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1>Voice Agent - Dev Interface</h1>
+          <button
+            onClick={() => setShowDevLogs(false)}
+            style={{
+              padding: '8px 16px',
+              background: '#6c757d',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            ← Back to Voice Agent
+          </button>
+        </header>
+        <DevLogs />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Voice Agent - Dev Interface</h1>
-        <ConnectionStatus sessionId={sessionId} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+          <ConnectionStatus sessionId={sessionId} />
+          <button
+            onClick={() => setShowDevLogs(true)}
+            style={{
+              padding: '8px 16px',
+              background: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            🛠️ Dev Logs
+          </button>
+        </div>
       </header>
 
       <main className="app-main">

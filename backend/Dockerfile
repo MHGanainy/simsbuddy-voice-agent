@@ -3,9 +3,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies: ffmpeg and supervisor for multi-process management
+# Install system dependencies: ffmpeg, supervisor, docker client for log viewing
 RUN apt-get update && \
-    apt-get install -y supervisor ffmpeg curl && \
+    apt-get install -y supervisor ffmpeg curl docker.io && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

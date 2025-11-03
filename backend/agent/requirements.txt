@@ -9,3 +9,6 @@ torch
 # Database dependencies for transcript storage
 asyncpg==0.29.0
 python-dotenv==1.0.0
+
+# HTTP client for heartbeat billing
+requests==2.31.0
