@@ -38,9 +38,6 @@ class CreditService:
             if not database_url:
                 raise ValueError("DATABASE_URL environment variable is not set")
 
-            if database_url.startswith('prisma://'):
-                logger.warning("Detected Prisma proxy URL, ensure you're using the direct PostgreSQL URL")
-
             try:
                 cls._pool = await asyncpg.create_pool(
                     database_url,

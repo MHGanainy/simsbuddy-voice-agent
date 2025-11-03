@@ -22,13 +22,6 @@ class Database:
             if not database_url:
                 raise ValueError("DATABASE_URL environment variable is not set")
 
-            # Handle Prisma proxy URLs if needed
-            if database_url.startswith('prisma://'):
-                # Extract the actual PostgreSQL URL from Prisma format
-                # Prisma URLs are typically proxies, need actual PostgreSQL URL
-                logger.warning("Detected Prisma proxy URL, ensure you're using the direct PostgreSQL URL")
-                # User should provide the direct PostgreSQL URL in DATABASE_URL
-
             try:
                 cls._pool = await asyncpg.create_pool(
                     database_url,
