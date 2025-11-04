@@ -146,11 +146,12 @@ class CreditService:
 
         Uses Redis idempotency key to prevent double-charging.
         Creates audit trail in CreditTransaction table.
-        Updates SimulationAttempt.minutesBilled.
+        Updates SimulationAttempt.minutesBilled to reflect total count of minutes billed.
 
         Args:
             session_id: The session ID (correlation_token)
-            minute_number: The minute number being billed (1-indexed)
+            minute_number: The minute number being billed (0-indexed: 0=first minute, 1=second, etc.)
+                          Note: minutesBilled will be set to minute_number + 1 (the count)
 
         Returns:
             Dict with:
@@ -265,14 +266,14 @@ class CreditService:
                         f"Voice simulation - minute {minute_number}"
                     )
 
-                    # Update SimulationAttempt.minutesBilled
+                    # Update SimulationAttempt.minutesBilled (store count, not minute number)
                     await connection.execute(
                         """
                         UPDATE simulation_attempts
                         SET minutes_billed = $1
                         WHERE "correlationToken" = $2
                         """,
-                        minute_number,
+                        minute_number + 1,  # Convert minute number to count (0 -> 1, 1 -> 2, etc.)
                         session_id
                     )
 
@@ -354,10 +355,14 @@ class CreditService:
             )
 
             # Bill any unbilled minutes
+            # Note: last_billed now stores COUNT (1, 2, 3...) not minute number (0, 1, 2...)
+            # So if last_billed=2, we've billed minutes 0,1. Next to bill is minute 2.
+            # If total_minutes=3, we need to bill minutes 0,1,2 (3 total)
+            # So we bill from minute last_billed to minute total_minutes-1
             minutes_billed_now = 0
             failed_minutes = []
 
-            for minute in range(last_billed + 1, total_minutes + 1):
+            for minute in range(last_billed, total_minutes):
                 result = await cls.deduct_minute(session_id, minute)
 
                 if result['result'] in [CreditDeductionResult.SUCCESS, CreditDeductionResult.ALREADY_BILLED]:
