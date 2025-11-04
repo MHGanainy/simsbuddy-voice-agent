@@ -1,6 +1,6 @@
 {
   "name": "voice-agent-minimal-frontend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Minimal development/testing interface for LiveKit voice agent",
   "type": "module",
   "scripts": {
