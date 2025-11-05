@@ -752,14 +752,6 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # Clean up resources
         logger.info("cleanup_started")
 
-        # Ensure transport is closed
-        if 'transport' in locals():
-            try:
-                await transport.close()
-                logger.info("Transport closed successfully")
-            except Exception as e:
-                logger.error(f"Error closing transport: {e}")
-
         # Close HTTP session if it exists
         if 'session' in locals() and session and not session.closed:
             try:
