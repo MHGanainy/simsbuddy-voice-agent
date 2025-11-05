@@ -775,6 +775,18 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             except Exception as e:
                 logger.error("session_close_error", error=str(e), exc_info=True)
 
+        # Mark session as completed in Redis
+        try:
+            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+            redis_client = redis.from_url(redis_url)
+            redis_client.hset(f'session:{room_name}', mapping={
+                'status': 'completed',
+                'lastActive': int(time.time())
+            })
+            logger.info("session_marked_completed", session_id=room_name)
+        except Exception as status_error:
+            logger.error("status_update_failed", error=str(status_error))
+
         logger.info("shutdown_complete")
 
 
