@@ -18,6 +18,7 @@ import threading
 
 # Import structured logging
 from backend.common.logging_config import setup_logging, LogContext
+from backend.common.session_store import SessionStore
 
 # Setup logging
 logger = setup_logging(service_name='celery-worker')
@@ -28,6 +29,9 @@ app.config_from_object('backend.orchestrator.celeryconfig')
 
 # Redis client
 redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+
+# Session store for type-safe Redis operations
+session_store = SessionStore(redis_client)
 
 # Configuration
 PYTHON_SCRIPT_PATH = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_assistant.py')
@@ -321,37 +325,23 @@ def health_check_agents():
     """
     Check health of all running agents.
     Runs every 60 seconds via Beat scheduler.
+
+    Uses SessionStore for type-safe Redis operations.
     """
     try:
         checked_count = 0
         healthy_count = 0
         dead_count = 0
 
-        # Get all session keys (only direct session hashes, not user mappings)
-        all_keys = redis_client.keys('session:*')
+        # Get all session IDs (SessionStore handles filtering and type validation)
+        session_ids = session_store.get_all_session_ids()
 
-        # Filter to only get session hashes, not user mapping strings or sets
-        session_keys = []
-        for key in all_keys:
-            key_str = key.decode() if isinstance(key, bytes) else key
-            # Skip session:user:* keys (user ID mappings) and session:ready (set)
-            if ':user:' not in key_str and key_str != 'session:ready':
-                session_keys.append(key_str)
-
-        for key_str in session_keys:
-            # Extract session ID (everything after "session:")
-            session_id = key_str[len('session:'):]
-            session_data = redis_client.hgetall(f'session:{session_id}')
+        for session_id in session_ids:
+            # Get session data (already decoded and type-safe)
+            session_data = session_store.get_session_data(session_id)
 
             if not session_data:
                 continue
-
-            # Decode bytes to strings
-            session_data = {
-                k.decode() if isinstance(k, bytes) else k:
-                v.decode() if isinstance(v, bytes) else v
-                for k, v in session_data.items()
-            }
 
             status = session_data.get('status')
             if status not in ['ready', 'active']:
@@ -384,6 +374,7 @@ def health_check_agents():
                 dead_count += 1
 
         logger.info("healthcheck_complete",
+                   total_sessions_found=len(session_ids),
                    checked=checked_count,
                    healthy=healthy_count,
                    dead=dead_count)
@@ -397,33 +388,23 @@ def cleanup_stale_agents():
     """
     Clean up stale sessions and terminated agents.
     Runs every 5 minutes via Beat scheduler.
+
+    Uses SessionStore for type-safe Redis operations.
     """
     try:
         now = int(time.time())
         timeout = int(os.getenv('SESSION_TIMEOUT', 14400))  # Default 4 hours
         cleaned_count = 0
 
-        session_keys = redis_client.keys('session:*')
+        # Get all session IDs (SessionStore handles filtering and type validation)
+        session_ids = session_store.get_all_session_ids()
 
-        for key in session_keys:
-            key_str = key.decode() if isinstance(key, bytes) else key
-
-            # Skip session:user:* keys (user ID mappings) and session:ready (set)
-            if ':user:' in key_str or key_str == 'session:ready':
-                continue
-
-            session_id = key_str.split(':')[1]
-            session_data = redis_client.hgetall(f'session:{session_id}')
+        for session_id in session_ids:
+            # Get session data (already decoded and type-safe)
+            session_data = session_store.get_session_data(session_id)
 
             if not session_data:
                 continue
-
-            # Decode bytes
-            session_data = {
-                k.decode() if isinstance(k, bytes) else k:
-                v.decode() if isinstance(v, bytes) else v
-                for k, v in session_data.items()
-            }
 
             last_active = int(session_data.get('lastActive', session_data.get('createdAt', 0)))
 
@@ -446,20 +427,7 @@ def cleanup_stale_agents():
                     except (ProcessLookupError, OSError):
                         pass
 
-                # Clean up Redis keys
-                user_id = session_data.get('userId')
-                redis_client.delete(f'session:{session_id}')
-                redis_client.delete(f'session:{session_id}:config')  # Session-based config
-                redis_client.delete(f'agent:{session_id}:pid')
-                redis_client.delete(f'agent:{session_id}:logs')
-                redis_client.delete(f'agent:{session_id}:logfile')
-                redis_client.delete(f'agent:{session_id}:health')
-                redis_client.srem('session:ready', session_id)
-                redis_client.srem('session:starting', session_id)
-                if user_id:
-                    redis_client.delete(f'session:user:{user_id}')
-
-                # Clean up log file
+                # Clean up log file before Redis cleanup
                 log_file = session_data.get('logFile')
                 if log_file and os.path.exists(log_file):
                     try:
@@ -470,12 +438,19 @@ def cleanup_stale_agents():
                                      log_file=log_file,
                                      error=str(e))
 
+                # Comprehensive Redis cleanup using SessionStore
+                user_id = session_data.get('userId')
+                session_store.cleanup_session(session_id, user_id)
+
                 cleaned_count += 1
 
         if cleaned_count > 0:
-            logger.info("cleanup_complete", cleaned_sessions=cleaned_count)
+            logger.info("cleanup_complete",
+                       total_sessions_found=len(session_ids),
+                       cleaned_sessions=cleaned_count)
         else:
-            logger.debug("cleanup_no_stale_sessions")
+            logger.debug("cleanup_no_stale_sessions",
+                        total_sessions_found=len(session_ids))
 
     except Exception as e:
         logger.error("cleanup_error", error=str(e), exc_info=True)
