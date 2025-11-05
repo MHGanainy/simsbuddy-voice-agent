@@ -719,28 +719,43 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             logger.error("duration_tracking_failed", error=str(duration_error))
 
         # Save transcripts to database using asyncpg
-        if 'transcript_storage' in locals() and len(transcript_storage) > 0:
-            logger.info(f"Saving {len(transcript_storage)} transcripts for session {room_name}")
+        if 'transcript_storage' in locals():
+            # If no transcripts captured but opening line was sent, save it as fallback
+            if len(transcript_storage) == 0 and opening_line:
+                logger.info(f"No transcripts captured - adding opening line as fallback for session {room_name}")
+                # Reconstruct the greeting that was sent
+                greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant. How can I help you today?"
+                # Use conversation start time if available, otherwise current time
+                fallback_timestamp = start_time if (start_time and isinstance(start_time, int)) else int(time.time())
+                transcript_storage.add_message(
+                    role="assistant",
+                    content=greeting,
+                    timestamp=fallback_timestamp
+                )
 
-            try:
-                # Get transcript data
-                transcript_data = transcript_storage.get_transcript_data()
+            # Now save if we have any transcripts
+            if len(transcript_storage) > 0:
+                logger.info(f"Saving {len(transcript_storage)} transcripts for session {room_name}")
 
-                # Save to database
-                success = await Database.save_transcript(room_name, transcript_data)
+                try:
+                    # Get transcript data
+                    transcript_data = transcript_storage.get_transcript_data()
 
-                if success:
-                    logger.info(f"✅ Transcripts saved successfully for session {room_name}",
-                              transcript_count=len(transcript_data))
-                else:
-                    logger.error(f"❌ Failed to save transcripts for session {room_name}")
+                    # Save to database
+                    success = await Database.save_transcript(room_name, transcript_data)
 
-            except Exception as e:
-                logger.error(f"Exception saving transcripts: {e}",
-                           session_id=room_name,
-                           exc_info=True)
-        else:
-            logger.info(f"No transcripts to save for session {room_name}")
+                    if success:
+                        logger.info(f"✅ Transcripts saved successfully for session {room_name}",
+                                  transcript_count=len(transcript_data))
+                    else:
+                        logger.error(f"❌ Failed to save transcripts for session {room_name}")
+
+                except Exception as e:
+                    logger.error(f"Exception saving transcripts: {e}",
+                               session_id=room_name,
+                               exc_info=True)
+            else:
+                logger.info(f"No transcripts to save for session {room_name}")
 
         # Close database connection
         try:
