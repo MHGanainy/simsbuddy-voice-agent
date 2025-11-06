@@ -14,9 +14,9 @@ import redis
 import requests
 
 # Import structured logging
-from backend.common.logging_config import setup_logging, LogContext
+from backend.shared.logging_config import setup_logging, LogContext
 # Import database service for transcript storage
-from backend.common.services import Database
+from backend.shared.services import Database
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3

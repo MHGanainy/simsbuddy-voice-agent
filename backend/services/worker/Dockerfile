@@ -25,21 +25,21 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy and install worker-specific dependencies (includes Celery + agent deps)
-COPY backend/worker/requirements.txt /app/backend/worker/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/worker/requirements.txt
+COPY backend/services/worker/requirements.txt /app/backend/services/worker/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/services/worker/requirements.txt
 
 # Copy entire backend codebase to maintain monorepo structure
-# This ensures all imports work correctly (backend.common, backend.agent, etc.)
+# This ensures all imports work correctly (backend.shared, backend.agent, etc.)
 COPY backend/ /app/backend/
 
 # Copy worker supervisord configuration
-COPY backend/worker/supervisord.conf /app/supervisord.conf
+COPY backend/services/worker/supervisord.conf /app/supervisord.conf
 
 # Create directories for logs and temporary files
 RUN mkdir -p /var/log/voice-agents /tmp/supervisor
 
 # Set working directory to worker (for celery commands in supervisord)
-WORKDIR /app/backend/worker
+WORKDIR /app/backend/services/worker
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \

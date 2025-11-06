@@ -20,7 +20,7 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: backend/services/orchestrator/Dockerfile
     container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
@@ -75,7 +75,7 @@ services:
   worker:
     build:
       context: .
-      dockerfile: backend/worker/Dockerfile
+      dockerfile: backend/services/worker/Dockerfile
     container_name: voice-agent-worker
     environment:
       # Redis

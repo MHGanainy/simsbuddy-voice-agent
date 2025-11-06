@@ -21,7 +21,7 @@ import redis
 import redis.exceptions
 import os
 from typing import List, Dict, Optional, Set, Generator
-from backend.common.logging_config import setup_logging
+from backend.shared.logging_config import setup_logging
 
 logger = setup_logging(service_name='session-store')
 

@@ -17,20 +17,20 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Copy and install orchestrator dependencies only
 # Note: Includes Celery as a client for publishing tasks to worker queue
-COPY backend/orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
+COPY backend/services/orchestrator/requirements.txt /app/backend/services/orchestrator/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/services/orchestrator/requirements.txt
 
 # Copy entire backend codebase to /app/backend (consistent with docker-compose volume mount)
 COPY backend/ /app/backend/
 
 # Copy supervisor configuration
-COPY backend/supervisord.conf /app/supervisord.conf
+COPY backend/services/orchestrator/supervisord.conf /app/supervisord.conf
 
 # Create log directories (use /tmp for Railway ephemeral storage)
 RUN mkdir -p /tmp/supervisor
 
 # Set working directory to orchestrator (for uvicorn commands)
-WORKDIR /app/backend/orchestrator
+WORKDIR /app/backend/services/orchestrator
 
 # Expose port (Railway will inject $PORT at runtime)
 EXPOSE 8000

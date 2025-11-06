@@ -24,13 +24,13 @@ import redis
 
 # Import Celery and worker tasks
 from celery import Celery
-from backend.worker.tasks import spawn_voice_agent
+from backend.services.worker.tasks import spawn_voice_agent
 
 # Import structured logging
-from backend.common.logging_config import setup_logging, LogContext
+from backend.shared.logging_config import setup_logging, LogContext
 
 # Import credit billing service
-from backend.common.services.credit_service import CreditService, CreditDeductionResult
+from backend.shared.services.credit_service import CreditService, CreditDeductionResult
 
 # Setup logging
 logger = setup_logging(service_name='orchestrator')
@@ -278,7 +278,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         # Reconcile billing before cleanup
         if cleanup_details["durationMinutes"] > 0:
             try:
-                from backend.common.services import CreditService
+                from backend.shared.services import CreditService
 
                 logger.info("cleanup_billing_reconciliation_started",
                            session_id=session_id,

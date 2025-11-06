@@ -10,7 +10,7 @@ Features:
 - Context managers for automatic correlation tracking
 
 Usage:
-    from backend.common.logging_config import setup_logging, get_logger, LogContext
+    from backend.shared.logging_config import setup_logging, get_logger, LogContext
 
     # Setup logging at service startup
     logger = setup_logging(service_name='orchestrator')

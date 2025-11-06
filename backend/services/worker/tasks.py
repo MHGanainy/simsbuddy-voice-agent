@@ -19,15 +19,15 @@ import signal
 import threading
 
 # Import structured logging
-from backend.common.logging_config import setup_logging, LogContext
-from backend.common.session_store import SessionStore
+from backend.shared.logging_config import setup_logging, LogContext
+from backend.shared.session_store import SessionStore
 
 # Setup logging
 logger = setup_logging(service_name='celery-worker')
 
 # Initialize Celery
 app = Celery('voice_agent_worker')
-app.config_from_object('backend.worker.celeryconfig')
+app.config_from_object('backend.services.worker.celeryconfig')
 
 # Redis client
 redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
