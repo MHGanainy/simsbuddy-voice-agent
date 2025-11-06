@@ -16,17 +16,16 @@ services:
     networks:
       - voice-agent-network
 
-  # Combined Service - Orchestrator + Worker in one container
-  # Runs FastAPI server, Celery worker, and Celery beat together
-  voice-agent:
+  # Orchestrator - FastAPI server only (publishes tasks to worker queue)
+  orchestrator:
     build:
       context: .
-      dockerfile: backend/Dockerfile
-    container_name: voice-agent
+      dockerfile: backend/services/orchestrator/Dockerfile
+    container_name: voice-agent-orchestrator
     ports:
       - "8000:8000"
     environment:
-      # Port (for FastAPI server)
+      # Port (for supervisor compatibility with Railway)
       PORT: 8000
 
       # Redis
@@ -49,10 +48,58 @@ services:
       MAX_BOTS: 50
       SESSION_TIMEOUT: 1800000
 
+      # Python path for absolute imports
+      PYTHONPATH: /app
+
+      # Logging configuration
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+      LOG_FORMAT: ${LOG_FORMAT:-console}  # console (dev) or json (prod)
+      SERVICE_NAME: orchestrator
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount for development (comment out for production)
+      - ./backend:/app/backend
+    networks:
+      - voice-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/orchestrator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Worker - Celery workers + beat (executes background tasks and spawns agents)
+  worker:
+    build:
+      context: .
+      dockerfile: backend/services/worker/Dockerfile
+    container_name: voice-agent-worker
+    environment:
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+
+      # LiveKit credentials (for agent spawning)
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+
+      # AI Service API Keys (for agents)
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
+      INWORLD_API_KEY: ${INWORLD_API_KEY}
+
+      # Database (for transcript storage)
+      DATABASE_URL: ${DATABASE_URL}
+
       # Worker config
-      BOT_STARTUP_TIMEOUT: 30
+      SESSION_TIMEOUT: 1800000  # 30 minutes (in ms)
+      BOT_STARTUP_TIMEOUT: 30   # 30 seconds for agent startup
+
+      # Python script path for agent spawning
       PYTHON_SCRIPT_PATH: /app/backend/agent/voice_assistant.py
-      AGENT_LOG_DIR: /var/log/voice-agents
 
       # Python path for absolute imports
       PYTHONPATH: /app
@@ -60,12 +107,11 @@ services:
       # Logging configuration
       LOG_LEVEL: ${LOG_LEVEL:-INFO}  # DEBUG, INFO, WARNING, ERROR, CRITICAL
       LOG_FORMAT: ${LOG_FORMAT:-console}  # console (dev) or json (prod)
-      SERVICE_NAME: voice-agent
+      SERVICE_NAME: worker
+      AGENT_LOG_DIR: /var/log/voice-agents
 
       # Orchestrator URL for agent heartbeat callbacks
-      # Since everything runs in the same container, use localhost
-      ORCHESTRATOR_URL: http://localhost:8000
-
+      ORCHESTRATOR_URL: http://orchestrator:8000
     depends_on:
       redis:
         condition: service_healthy
@@ -78,11 +124,11 @@ services:
       - voice-agent-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/orchestrator/health"]
+      test: ["CMD-SHELL", "celery -A tasks inspect ping -d celery@$${HOSTNAME} || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 60s  # Allow time for ML model loading
 
   # Frontend - React application (simplified dev interface)
   frontend:
@@ -97,7 +143,7 @@ services:
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     depends_on:
-      - voice-agent
+      - orchestrator
     networks:
       - voice-agent-network
     restart: unless-stopped
