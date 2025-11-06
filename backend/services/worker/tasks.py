@@ -18,8 +18,8 @@ import uuid
 import signal
 import threading
 
-# Import structured logging
-from backend.shared.logging_config import setup_logging, LogContext
+# Import simplified logging
+from backend.shared.logging_config import setup_logging
 from backend.shared.session_store import SessionStore
 
 # Setup logging
@@ -84,17 +84,12 @@ def continuous_log_reader(process, session_id, log_file_path):
                     redis_client.ltrim(f'agent:{session_id}:logs', -MAX_LOG_ENTRIES, -1)
                 except Exception as e:
                     # Don't let Redis errors stop log file writing
-                    logger.warning("log_reader_redis_error",
-                                 session_id=session_id,
-                                 error=str(e))
+                    logger.warning(f"log_reader_redis_error session_id={session_id} error={str(e)}")
 
     except Exception as e:
-        logger.error("log_reader_thread_error",
-                    session_id=session_id,
-                    error=str(e),
-                    exc_info=True)
+        logger.error(f"log_reader_thread_error session_id={session_id} error={str(e)}", exc_info=True)
     finally:
-        logger.info("log_reader_thread_stopped", session_id=session_id)
+        logger.info(f"log_reader_thread_stopped session_id={session_id}")
 
 
 @app.task(base=AgentSpawnTask, bind=True, name='spawn_voice_agent')
@@ -113,9 +108,9 @@ def spawn_voice_agent(self, session_id, user_id=None):
     task_id = self.request.id
 
     # Use LogContext for correlation tracking
-    with LogContext(session_id=session_id, task_id=task_id, user_id=user_id):
+    if True:  # Removed LogContext wrapper
         try:
-            logger.info("agent_spawn_started")
+            logger.info(f"agent_spawn_started session_id={session_id} task_id={task_id} user_id={user_id}")
 
             # Fetch session configuration from Redis
             # Changed from user-based to session-based to support multiple concurrent sessions per user
@@ -132,12 +127,9 @@ def spawn_voice_agent(self, session_id, user_id=None):
                         opening_line = config[b'openingLine'].decode('utf-8')
                     if b'systemPrompt' in config:
                         system_prompt = config[b'systemPrompt'].decode('utf-8')
-                    logger.info("session_config_loaded",
-                               voice_id=voice_id,
-                               opening_line_preview=opening_line[:50] if opening_line else 'default',
-                               system_prompt_preview=system_prompt[:50] if system_prompt else 'default')
+                    logger.info(f"session_config_loaded session_id={session_id} voice_id={voice_id} opening_line_preview={opening_line[:50] if opening_line else 'default'} system_prompt_preview={system_prompt[:50] if system_prompt else 'default'}")
             except Exception as e:
-                logger.warning("session_config_load_failed", error=str(e), fallback="defaults")
+                logger.warning(f"session_config_load_failed session_id={session_id} error={str(e)} fallback=defaults")
 
             # Update session status
             redis_client.hset(f'session:{session_id}', mapping={
@@ -186,25 +178,14 @@ def spawn_voice_agent(self, session_id, user_id=None):
                 redis_client.hset(f'session:{session_id}', 'agentPgid', str(pgid))
                 redis_client.hset(f'session:{session_id}', 'logFile', log_file_path)
 
-                logger.info("agent_process_spawned",
-                           pid=pid,
-                           pgid=pgid,
-                           is_group_leader=is_group_leader,
-                           voice_id=voice_id,
-                           log_file=log_file_path)
+                logger.info(f"agent_process_spawned session_id={session_id} pid={pid} pgid={pgid} is_group_leader={is_group_leader} voice_id={voice_id} log_file={log_file_path}")
 
                 # Verify that the process is a group leader (expected with os.setsid)
                 if not is_group_leader:
-                    logger.warning("agent_not_group_leader",
-                                  pid=pid,
-                                  pgid=pgid,
-                                  warning="Process may not be properly isolated for cleanup")
+                    logger.warning(f"agent_not_group_leader session_id={session_id} pid={pid} pgid={pgid} warning=Process may not be properly isolated for cleanup")
 
             except (ProcessLookupError, OSError) as e:
-                logger.error("agent_pgid_lookup_failed",
-                           pid=pid,
-                           error=str(e),
-                           warning="Process group tracking unavailable")
+                logger.error(f"agent_pgid_lookup_failed session_id={session_id} pid={pid} error={str(e)} warning=Process group tracking unavailable")
                 # Still store PID even if PGID lookup fails
                 redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)
                 redis_client.set(f'agent:{session_id}:logfile', log_file_path, ex=14400)
@@ -220,7 +201,7 @@ def spawn_voice_agent(self, session_id, user_id=None):
                 name=f'log-reader-{session_id}'
             )
             log_thread.start()
-            logger.info("log_reader_thread_started", session_id=session_id, thread_name=log_thread.name)
+            logger.info(f"log_reader_thread_started session_id={session_id} thread_name={log_thread.name}")
 
             # Monitor log file for connection success
             # The background thread is reading stdout and writing to the log file
@@ -232,10 +213,7 @@ def spawn_voice_agent(self, session_id, user_id=None):
                 # Check if process died
                 if process.poll() is not None:
                     error_msg = f"Agent process died unexpectedly (exit code: {process.returncode})"
-                    logger.error("agent_process_died",
-                               exit_code=process.returncode,
-                               log_file=log_file_path,
-                               exc_info=True)
+                    logger.error(f"agent_process_died session_id={session_id} exit_code={process.returncode} log_file={log_file_path}", exc_info=True)
                     raise Exception(error_msg)
 
                 # Read new lines from Redis logs (written by background thread)
@@ -251,25 +229,25 @@ def spawn_voice_agent(self, session_id, user_id=None):
                             # Check for LiveKit connection
                             if any(keyword in line for keyword in ['Connected to', 'Pipeline started', 'Room joined', 'Participant joined']):
                                 connected = True
-                                logger.info("agent_connected_successfully", log_line=line[:100])
+                                logger.info(f"agent_connected_successfully session_id={session_id} log_line={line[:100]}")
                                 break
 
                         if connected:
                             break
 
                 except Exception as e:
-                    logger.warning("agent_log_check_error", error=str(e))
+                    logger.warning(f"agent_log_check_error session_id={session_id} error={str(e)}")
 
                 # Progress log every 5 seconds
                 if time.time() - last_check > 5:
                     elapsed = time.time() - start_time
-                    logger.debug("agent_connection_waiting", elapsed_seconds=f"{elapsed:.1f}")
+                    logger.debug(f"agent_connection_waiting session_id={session_id} elapsed_seconds={elapsed:.1f}")
                     last_check = time.time()
 
                 time.sleep(0.2)  # Check every 200ms
 
             if not connected:
-                logger.error("agent_connection_timeout", timeout_seconds=BOT_STARTUP_TIMEOUT)
+                logger.error(f"agent_connection_timeout session_id={session_id} timeout_seconds={BOT_STARTUP_TIMEOUT}")
                 os.killpg(process.pid, signal.SIGTERM)  # Kill entire process group
                 time.sleep(2)
                 if process.poll() is None:
@@ -290,7 +268,7 @@ def spawn_voice_agent(self, session_id, user_id=None):
             redis_client.sadd('session:ready', session_id)
             if user_id:
                 redis_client.set(f'session:user:{user_id}', session_id)
-            logger.info("agent_ready", startup_time_seconds=f"{startup_time:.2f}")
+            logger.info(f"agent_ready session_id={session_id} startup_time_seconds={startup_time:.2f}")
 
             result = {
                 'session_id': session_id,
@@ -298,12 +276,12 @@ def spawn_voice_agent(self, session_id, user_id=None):
                 'status': 'ready',
                 'startup_time': startup_time
             }
-            logger.info("agent_spawn_success", result=result)
+            logger.info(f"agent_spawn_success session_id={session_id} result={result}")
             return result
 
         except Exception as e:
             error_msg = str(e)
-            logger.error("agent_spawn_failed", error=error_msg, exc_info=True)
+            logger.error(f"agent_spawn_failed session_id={session_id} error={error_msg}", exc_info=True)
 
             # Mark session as failed
             redis_client.hset(f'session:{session_id}', mapping={
@@ -316,7 +294,7 @@ def spawn_voice_agent(self, session_id, user_id=None):
             # Retry if not max retries
             if self.request.retries < self.max_retries:
                 retry_num = self.request.retries + 1
-                logger.info("agent_spawn_retrying", retry_num=retry_num, max_retries=self.max_retries)
+                logger.info(f"agent_spawn_retrying session_id={session_id} retry_num={retry_num} max_retries={self.max_retries}")
                 raise self.retry(exc=e)
 
             raise
@@ -366,23 +344,16 @@ def health_check_agents():
 
             except (ProcessLookupError, OSError):
                 # Process is dead
-                logger.warning("healthcheck_agent_dead",
-                             session_id=session_id,
-                             pid=pid,
-                             action="marking_as_failed")
+                logger.warning(f"healthcheck_agent_dead session_id={session_id} pid={pid} action=marking_as_failed")
                 redis_client.hset(f'session:{session_id}', 'status', 'error')
                 redis_client.hset(f'session:{session_id}', 'error', 'Process died unexpectedly')
                 redis_client.srem('session:ready', session_id)
                 dead_count += 1
 
-        logger.info("healthcheck_complete",
-                   total_sessions_found=len(session_ids),
-                   checked=checked_count,
-                   healthy=healthy_count,
-                   dead=dead_count)
+        logger.info(f"healthcheck_complete total_sessions_found={len(session_ids)} checked={checked_count} healthy={healthy_count} dead={dead_count}")
 
     except Exception as e:
-        logger.error("healthcheck_error", error=str(e), exc_info=True)
+        logger.error(f"healthcheck_error error={str(e)}", exc_info=True)
 
 
 @app.task(name='cleanup_stale_agents')
@@ -411,9 +382,7 @@ def cleanup_stale_agents():
             last_active = int(session_data.get('lastActive', session_data.get('createdAt', 0)))
 
             if now - last_active > timeout:
-                logger.info("cleanup_stale_session",
-                           session_id=session_id,
-                           inactive_seconds=now - last_active)
+                logger.info(f"cleanup_stale_session session_id={session_id} inactive_seconds={now - last_active}")
 
                 # Stop agent process and all children
                 pid = session_data.get('agentPid')
@@ -434,11 +403,9 @@ def cleanup_stale_agents():
                 if log_file and os.path.exists(log_file):
                     try:
                         os.remove(log_file)
-                        logger.debug("cleanup_log_file_removed", log_file=log_file)
+                        logger.debug(f"cleanup_log_file_removed session_id={session_id} log_file={log_file}")
                     except Exception as e:
-                        logger.warning("cleanup_log_file_removal_failed",
-                                     log_file=log_file,
-                                     error=str(e))
+                        logger.warning(f"cleanup_log_file_removal_failed session_id={session_id} log_file={log_file} error={str(e)}")
 
                 # Comprehensive Redis cleanup using SessionStore
                 user_id = session_data.get('userId')
@@ -447,15 +414,12 @@ def cleanup_stale_agents():
                 cleaned_count += 1
 
         if cleaned_count > 0:
-            logger.info("cleanup_complete",
-                       total_sessions_found=len(session_ids),
-                       cleaned_sessions=cleaned_count)
+            logger.info(f"cleanup_complete total_sessions_found={len(session_ids)} cleaned_sessions={cleaned_count}")
         else:
-            logger.debug("cleanup_no_stale_sessions",
-                        total_sessions_found=len(session_ids))
+            logger.debug(f"cleanup_no_stale_sessions total_sessions_found={len(session_ids)}")
 
     except Exception as e:
-        logger.error("cleanup_error", error=str(e), exc_info=True)
+        logger.error(f"cleanup_error error={str(e)}", exc_info=True)
 
 
 # Beat Schedule Configuration
@@ -475,7 +439,4 @@ app.conf.timezone = 'UTC'
 
 if __name__ == '__main__':
     # For testing tasks directly
-    logger.info("celery_tasks_loaded",
-               redis_url=os.getenv('REDIS_URL', 'Not set'),
-               python_script_path=PYTHON_SCRIPT_PATH,
-               bot_startup_timeout=BOT_STARTUP_TIMEOUT)
+    logger.info(f"celery_tasks_loaded redis_url={os.getenv('REDIS_URL', 'Not set')} python_script_path={PYTHON_SCRIPT_PATH} bot_startup_timeout={BOT_STARTUP_TIMEOUT}")

@@ -14,7 +14,7 @@ import redis
 import requests
 
 # Import structured logging
-from backend.shared.logging_config import setup_logging, LogContext
+from backend.shared.logging_config import setup_logging
 # Import database service for transcript storage
 from backend.shared.services import Database
 
@@ -138,10 +138,7 @@ def validate_environment():
             missing.append(f"  - {var}: {description}")
 
     if missing:
-        logger.error("environment_validation_failed",
-                    missing_variables=missing,
-                    message="Please check your .env file",
-                    exc_info=True)
+        logger.error(f"environment_validation_failed missing_variables={missing} message='Please check your .env file'", exc_info=True)
         sys.exit(1)
 
     logger.info("environment_validated")
@@ -149,10 +146,10 @@ def validate_environment():
 validate_environment()
 
 
-def log_timing(message: str, **kwargs):
+def log_timing(message: str):
     """Log timing information only in development mode"""
     if ENABLE_TIMING:
-        logger.debug(f"TIMING: {message}", **kwargs)
+        logger.debug(f"TIMING: {message}")
 
 
 class TranscriptStorage:
@@ -198,7 +195,7 @@ async def heartbeat_task(session_id: str, transport=None, transcript_storage=Non
 
     while True:
         try:
-            logger.info("heartbeat_sending", session_id=session_id)
+            logger.info(f"heartbeat_sending session_id={session_id}")
 
             # Get orchestrator URL from environment
             orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
@@ -217,77 +214,48 @@ async def heartbeat_task(session_id: str, transport=None, transcript_storage=Non
             result = response.json()
 
             if result.get("status") == "stop":
-                logger.warning(
-                    "heartbeat_stop_received",
-                    session_id=session_id,
-                    reason=result.get("reason", "insufficient_credits"),
-                    message=result.get("message")
-                )
+                logger.warning(f"heartbeat_stop_received session_id={session_id} reason={result.get('reason', 'insufficient_credits')} message={result.get('message')}")
 
                 # Save transcript before stopping
                 if transcript_storage and len(transcript_storage) > 0:
                     try:
-                        logger.info("heartbeat_saving_transcript_before_stop",
-                                   session_id=session_id,
-                                   transcript_count=len(transcript_storage))
+                        logger.info(f"heartbeat_saving_transcript_before_stop session_id={session_id} transcript_count={len(transcript_storage)}")
 
                         transcript_data = transcript_storage.get_transcript_data()
                         success = await Database.save_transcript(session_id, transcript_data)
 
                         if success:
-                            logger.info("heartbeat_transcript_saved",
-                                       session_id=session_id,
-                                       transcript_count=len(transcript_data))
+                            logger.info(f"heartbeat_transcript_saved session_id={session_id} transcript_count={len(transcript_data)}")
                         else:
-                            logger.error("heartbeat_transcript_save_failed",
-                                        session_id=session_id)
+                            logger.error(f"heartbeat_transcript_save_failed session_id={session_id}")
                     except Exception as save_error:
-                        logger.error("heartbeat_transcript_save_error",
-                                    session_id=session_id,
-                                    error=str(save_error))
+                        logger.error(f"heartbeat_transcript_save_error session_id={session_id} error={str(save_error)}")
 
                 # Close transport if available
                 if transport:
                     try:
                         await transport.close()
-                        logger.info("heartbeat_transport_closed", session_id=session_id)
+                        logger.info(f"heartbeat_transport_closed session_id={session_id}")
                     except Exception as close_error:
-                        logger.error("heartbeat_transport_close_error",
-                                    error=str(close_error))
+                        logger.error(f"heartbeat_transport_close_error error={str(close_error)}")
 
                 # Exit the process (graceful shutdown)
-                logger.info("heartbeat_exiting_due_to_insufficient_credits",
-                           session_id=session_id)
+                logger.info(f"heartbeat_exiting_due_to_insufficient_credits session_id={session_id}")
                 sys.exit(0)
 
             elif result.get("status") == "ok":
-                logger.info(
-                    "heartbeat_success",
-                    session_id=session_id,
-                    minute_billed=result.get("minute_billed"),
-                    credits_remaining=result.get("credits_remaining"),
-                    already_billed=result.get("already_billed", False)
-                )
+                logger.info(f"heartbeat_success session_id={session_id} minute_billed={result.get('minute_billed')} credits_remaining={result.get('credits_remaining')} already_billed={result.get('already_billed', False)}")
             else:
-                logger.error(
-                    "heartbeat_error",
-                    session_id=session_id,
-                    error=result.get("message")
-                )
+                logger.error(f"heartbeat_error session_id={session_id} error={result.get('message')}")
 
             # Wait 60 seconds before next heartbeat
             await asyncio.sleep(60)
 
         except asyncio.CancelledError:
-            logger.info("heartbeat_cancelled", session_id=session_id)
+            logger.info(f"heartbeat_cancelled session_id={session_id}")
             break
         except Exception as e:
-            logger.error(
-                "heartbeat_exception",
-                session_id=session_id,
-                error=str(e),
-                exc_info=True
-            )
+            logger.error(f"heartbeat_exception session_id={session_id} error={str(e)}", exc_info=True)
             # Don't crash on heartbeat failure - just log and try again
             await asyncio.sleep(60)
 
@@ -306,24 +274,23 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     try:
         startup_time = time.perf_counter() if ENABLE_TIMING else None
         if ENABLE_TIMING:
-            log_timing("voice_assistant_main_started", timestamp=datetime.utcnow().isoformat())
+            log_timing(f"voice_assistant_main_started timestamp={datetime.utcnow().isoformat()}")
 
-        logger.info("voice_assistant_starting", voice_id=voice_id, opening_line=opening_line)
+        logger.info(f"voice_assistant_starting voice_id={voice_id} opening_line={opening_line}")
 
         # Configure LiveKit connection
         try:
             (url, token, room_name) = await configure()
-            logger.info("livekit_configured", room_name=room_name)
+            logger.info(f"livekit_configured room_name={room_name}")
         except Exception as e:
-            logger.error("livekit_configuration_failed", error=str(e), exc_info=True)
+            logger.error(f"livekit_configuration_failed error={str(e)}", exc_info=True)
             raise
 
         # Validate connection parameters
         if not url or not token or not room_name:
             raise ValueError("Missing LiveKit configuration parameters")
 
-        # Use LogContext to track session throughout the lifecycle
-        with LogContext(session_id=room_name, voice_id=voice_id):
+        if True:  # Removed LogContext wrapper
             # Create transport
             try:
                 transport = LiveKitTransport(
@@ -339,7 +306,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 )
                 logger.info("livekit_transport_created")
             except Exception as e:
-                logger.error("livekit_transport_creation_failed", error=str(e), exc_info=True)
+                logger.error(f"livekit_transport_creation_failed error={str(e)}", exc_info=True)
                 raise
 
             # Create STT service (AssemblyAI)
@@ -362,12 +329,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     vad_force_turn_endpoint=STT_VAD_FORCE_ENDPOINT,
                     language=STT_LANGUAGE,
                 )
-                logger.info("assemblyai_stt_initialized",
-                           model=STT_MODEL,
-                           vad_endpoint=STT_VAD_FORCE_ENDPOINT,
-                           confidence_threshold=STT_END_OF_TURN_CONFIDENCE)
+                logger.info(f"assemblyai_stt_initialized model={STT_MODEL} vad_endpoint={STT_VAD_FORCE_ENDPOINT} confidence_threshold={STT_END_OF_TURN_CONFIDENCE}")
             except Exception as e:
-                logger.error("assemblyai_stt_initialization_failed", error=str(e), exc_info=True)
+                logger.error(f"assemblyai_stt_initialization_failed error={str(e)}", exc_info=True)
                 raise
 
             # Create LLM service (Groq)
@@ -382,13 +346,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     presence_penalty=LLM_PRESENCE_PENALTY,
                     frequency_penalty=LLM_FREQUENCY_PENALTY,
                 )
-                logger.info("groq_llm_initialized",
-                           model=LLM_MODEL,
-                           stream=LLM_STREAM,
-                           max_tokens=LLM_MAX_TOKENS,
-                           temperature=LLM_TEMPERATURE)
+                logger.info(f"groq_llm_initialized model={LLM_MODEL} stream={LLM_STREAM} max_tokens={LLM_MAX_TOKENS} temperature={LLM_TEMPERATURE}")
             except Exception as e:
-                logger.error("groq_llm_initialization_failed", error=str(e), exc_info=True)
+                logger.error(f"groq_llm_initialization_failed error={str(e)}", exc_info=True)
                 raise
 
             # Create aiohttp session for InworldTTS
@@ -397,7 +357,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 session = aiohttp.ClientSession()
                 logger.info("http_session_created")
             except Exception as e:
-                logger.error("http_session_creation_failed", error=str(e), exc_info=True)
+                logger.error(f"http_session_creation_failed error={str(e)}", exc_info=True)
                 raise
 
             # Create TTS service (Inworld)
@@ -420,13 +380,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                         speed=voice_speed
                     ),
                 )
-                logger.info("inworld_tts_initialized",
-                           voice_id=voice_id,
-                           speed=voice_speed,
-                           temperature=TTS_TEMPERATURE,
-                           streaming=TTS_STREAMING)
+                logger.info(f"inworld_tts_initialized voice_id={voice_id} speed={voice_speed} temperature={TTS_TEMPERATURE} streaming={TTS_STREAMING}")
             except Exception as e:
-                logger.error("inworld_tts_initialization_failed", error=str(e), exc_info=True)
+                logger.error(f"inworld_tts_initialization_failed error={str(e)}", exc_info=True)
                 raise
 
         # Create conversation context
@@ -444,10 +400,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             },
         ]
 
-        logger.info("system_prompt_configured",
-                   custom_prompt=bool(system_prompt),
-                   prompt_length=len(full_system_prompt),
-                   critical_rules_appended=True)
+        logger.info(f"system_prompt_configured custom_prompt={bool(system_prompt)} prompt_length={len(full_system_prompt)} critical_rules_appended=True")
 
         # Add opening line to conversation history so LLM remembers it
         if opening_line:
@@ -463,9 +416,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         context_aggregator.aggregation_timeout = AGGREGATION_TIMEOUT
         context_aggregator.bot_interruption_timeout = BOT_INTERRUPTION_TIMEOUT
 
-        logger.info("context_aggregator_configured",
-                   aggregation_timeout=AGGREGATION_TIMEOUT,
-                   interruption_timeout=BOT_INTERRUPTION_TIMEOUT)
+        logger.info(f"context_aggregator_configured aggregation_timeout={AGGREGATION_TIMEOUT} interruption_timeout={BOT_INTERRUPTION_TIMEOUT}")
 
         # Create transcript processor and storage
         transcript_processor = TranscriptProcessor()
@@ -587,7 +538,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             event_start = time.perf_counter() if ENABLE_TIMING else None
 
             try:
-                logger.info("participant_joined", participant_id=participant_id)
+                logger.info(f"participant_joined participant_id={participant_id}")
 
                 # Track conversation start time (for billing)
                 redis_start = time.perf_counter() if ENABLE_TIMING else None
@@ -599,11 +550,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                                      'conversationStartTime',
                                      conversation_start_time)
                     if ENABLE_TIMING and redis_start:
-                        log_timing("redis_operation_complete",
-                                 duration_ms=f"{(time.perf_counter() - redis_start) * 1000:.1f}")
-                    logger.info("conversation_start_time_tracked", start_time=conversation_start_time)
+                        log_timing(f"redis_operation_complete duration_ms={(time.perf_counter() - redis_start) * 1000:.1f}")
+                    logger.info(f"conversation_start_time_tracked start_time={conversation_start_time}")
                 except Exception as redis_error:
-                    logger.error("redis_start_time_tracking_failed", error=str(redis_error))
+                    logger.error(f"redis_start_time_tracking_failed error={str(redis_error)}")
 
                 # Pipeline stabilization delay (reduced from 1.0s to 0.2s)
                 sleep_start = time.perf_counter() if ENABLE_TIMING else None
@@ -611,14 +561,13 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 await asyncio.sleep(PARTICIPANT_GREETING_DELAY)
 
                 if ENABLE_TIMING and sleep_start:
-                    log_timing("sleep_complete",
-                             duration_ms=f"{(time.perf_counter() - sleep_start) * 1000:.1f}")
+                    log_timing(f"sleep_complete duration_ms={(time.perf_counter() - sleep_start) * 1000:.1f}")
 
                 # Use custom opening line or default
                 greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant. How can I help you today?"
 
                 if ENABLE_TIMING:
-                    log_timing("greeting_prepared", greeting_length=len(greeting))
+                    log_timing(f"greeting_prepared greeting_length={len(greeting)}")
                     queue_start = time.perf_counter()
                 else:
                     queue_start = None
@@ -630,13 +579,11 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 if ENABLE_TIMING and queue_start and event_start:
                     queue_duration = (time.perf_counter() - queue_start) * 1000
                     total_duration = (time.perf_counter() - event_start) * 1000
-                    log_timing("opening_line_queued",
-                             queue_duration_ms=f"{queue_duration:.1f}",
-                             total_handler_duration_ms=f"{total_duration:.1f}")
+                    log_timing(f"opening_line_queued queue_duration_ms={queue_duration:.1f} total_handler_duration_ms={total_duration:.1f}")
 
-                logger.info("opening_line_sent", greeting_preview=greeting[:50])
+                logger.info(f"opening_line_sent greeting_preview={greeting[:50]}")
             except Exception as e:
-                logger.error("participant_join_handler_error", error=str(e), exc_info=True)
+                logger.error(f"participant_join_handler_error error={str(e)}", exc_info=True)
 
         # Register an event handler to receive data from the participant via text chat
         # in the LiveKit room. This will be used to as transcription frames and
@@ -645,7 +592,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         @transport.event_handler("on_data_received")
         async def on_data_received(transport, data, participant_id):
             try:
-                logger.info("data_received", participant_id=participant_id, data=str(data))
+                logger.info(f"data_received participant_id={participant_id} data={str(data)}")
                 # convert data from bytes to string
                 json_data = json.loads(data)
 
@@ -662,15 +609,15 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     ],
                 )
             except json.JSONDecodeError as e:
-                logger.error("json_decode_error", error=str(e), exc_info=True)
+                logger.error(f"json_decode_error error={str(e)}", exc_info=True)
             except Exception as e:
-                logger.error("data_received_handler_error", error=str(e), exc_info=True)
+                logger.error(f"data_received_handler_error error={str(e)}", exc_info=True)
 
         # Disable PipelineRunner's built-in signal handling so our finally block can execute
         runner = PipelineRunner(handle_sigint=False)
 
         # Start heartbeat task in background for credit billing
-        logger.info("starting_heartbeat_task", session_id=room_name)
+        logger.info(f"starting_heartbeat_task session_id={room_name}")
         heartbeat_handle = asyncio.create_task(
             heartbeat_task(room_name, transport, transcript_storage)
         )
@@ -681,19 +628,19 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt_received")
     except Exception as e:
-        logger.error("fatal_error", error=str(e), exc_info=True)
+        logger.error(f"fatal_error error={str(e)}", exc_info=True)
         raise
     finally:
-        logger.info(f"Cleanup initiated for session {room_name}",
-                   cleanup_triggered='cleanup_triggered' in locals() and cleanup_triggered)
+        cleanup_flag = 'cleanup_triggered' in locals() and cleanup_triggered
+        logger.info(f"Cleanup initiated for session {room_name} cleanup_triggered={cleanup_flag}")
 
         # Cancel heartbeat task if it's running
         if 'heartbeat_handle' in locals() and heartbeat_handle:
             try:
                 heartbeat_handle.cancel()
-                logger.info("heartbeat_task_cancelled", session_id=room_name)
+                logger.info(f"heartbeat_task_cancelled session_id={room_name}")
             except Exception as hb_error:
-                logger.error("heartbeat_cancellation_failed", error=str(hb_error))
+                logger.error(f"heartbeat_cancellation_failed error={str(hb_error)}")
 
         # Track conversation end time and duration (for billing)
         try:
@@ -712,11 +659,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     'conversationDurationMinutes': duration_minutes
                 })
 
-                logger.info("conversation_duration_tracked",
-                           duration_seconds=duration_seconds,
-                           duration_minutes=duration_minutes)
+                logger.info(f"conversation_duration_tracked duration_seconds={duration_seconds} duration_minutes={duration_minutes}")
         except Exception as duration_error:
-            logger.error("duration_tracking_failed", error=str(duration_error))
+            logger.error(f"duration_tracking_failed error={str(duration_error)}")
 
         # Save transcripts to database using asyncpg
         if 'transcript_storage' in locals():
@@ -773,7 +718,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 await session.close()
                 logger.info("http_session_closed")
             except Exception as e:
-                logger.error("session_close_error", error=str(e), exc_info=True)
+                logger.error(f"session_close_error error={str(e)}", exc_info=True)
 
         # Mark session as completed in Redis
         try:
@@ -783,9 +728,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 'status': 'completed',
                 'lastActive': int(time.time())
             })
-            logger.info("session_marked_completed", session_id=room_name)
+            logger.info(f"session_marked_completed session_id={room_name}")
         except Exception as status_error:
-            logger.error("status_update_failed", error=str(status_error))
+            logger.error(f"status_update_failed error={str(status_error)}")
 
         logger.info("shutdown_complete")
 
@@ -819,5 +764,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt_shutdown")
     except Exception as e:
-        logger.error("unhandled_exception", error=str(e), exc_info=True)
+        logger.error(f"unhandled_exception error={str(e)}", exc_info=True)
         sys.exit(1)

@@ -1,9 +1,6 @@
 # Shared dependencies across backend services
 python-dotenv
-loguru
 aiohttp
 redis==5.0.1
 
-# Structured logging
-structlog>=23.0.0
-python-json-logger>=2.0.0
+# Simplified logging (using standard library logging only - no external dependencies)

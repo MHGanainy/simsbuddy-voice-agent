@@ -23,10 +23,7 @@ requests==2.31.0
 # Environment configuration
 python-dotenv==1.0.0
 
-# Logging dependencies (from shared common package)
-structlog>=23.0.0
-python-json-logger>=2.0.0
-loguru
+# Simplified logging (using standard library logging only)
 
 # Async HTTP client (from shared common package)
 aiohttp

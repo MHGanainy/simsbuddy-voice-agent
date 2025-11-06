@@ -27,7 +27,7 @@ from celery import Celery
 from backend.services.worker.tasks import spawn_voice_agent
 
 # Import structured logging
-from backend.shared.logging_config import setup_logging, LogContext
+from backend.shared.logging_config import setup_logging
 
 # Import credit billing service
 from backend.shared.services.credit_service import CreditService, CreditDeductionResult
@@ -48,14 +48,14 @@ if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
 try:
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.ping()
-    logger.info("redis_connected", redis_url=REDIS_URL)
+    logger.info(f"redis_connected redis_url={REDIS_URL}")
 except Exception as e:
-    logger.error("redis_connection_failed", redis_url=REDIS_URL, error=str(e), exc_info=True)
+    logger.error(f"redis_connection_failed redis_url={REDIS_URL} error={str(e)}", exc_info=True)
     raise
 
 # Celery app (for task revocation)
 celery_app = Celery('voice_agent_tasks')
-celery_app.config_from_object('backend.orchestrator.celeryconfig')
+celery_app.config_from_object('backend.services.orchestrator.celeryconfig')
 
 # FastAPI app
 app = FastAPI(
@@ -159,7 +159,7 @@ def generate_livekit_token(session_id: str, user_name: str) -> str:
 
         return token.to_jwt()
     except Exception as e:
-        logger.error("livekit_token_generation_failed", error=str(e), exc_info=True)
+        logger.error(f"livekit_token_generation_failed error={str(e)}", exc_info=True)
         raise
 
 def verify_livekit_webhook(payload: bytes, signature: str) -> bool:
@@ -183,7 +183,7 @@ def verify_livekit_webhook(payload: bytes, signature: str) -> bool:
 
         return hmac.compare_digest(signature, expected_signature)
     except Exception as e:
-        logger.error("webhook_signature_verification_error", error=str(e), exc_info=True)
+        logger.error(f"webhook_signature_verification_error error={str(e)}", exc_info=True)
         return False
 
 async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, Any]:
@@ -199,9 +199,7 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
     Returns:
         dict with termination details
     """
-    logger.warning("session_terminating_insufficient_credits",
-                  session_id=session_id,
-                  reason="Student ran out of credits")
+    logger.warning(f"session_terminating_insufficient_credits session_id={session_id} reason='Student ran out of credits'")
 
     # Update session status to indicate credit depletion
     try:
@@ -210,11 +208,9 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
             'terminationReason': 'insufficient_credits',
             'terminatedAt': int(time.time())
         })
-        logger.info("session_marked_terminated", session_id=session_id)
+        logger.info(f"session_marked_terminated session_id={session_id}")
     except Exception as e:
-        logger.error("session_termination_status_update_failed",
-                    session_id=session_id,
-                    error=str(e))
+        logger.error(f"session_termination_status_update_failed session_id={session_id} error={str(e)}")
 
     # Call standard cleanup
     cleanup_result = await cleanup_session(session_id)
@@ -255,7 +251,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         session_data = redis_client.hgetall(session_key)
 
         if not session_data:
-            logger.warning("cleanup_no_session_found", session_id=session_id)
+            logger.warning(f"cleanup_no_session_found session_id={session_id}")
             cleanup_details["errors"].append("Session not found")
             return cleanup_details
 
@@ -269,20 +265,16 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             if duration_minutes:
                 cleanup_details["durationMinutes"] = int(duration_minutes) if isinstance(duration_minutes, bytes) else int(duration_minutes)
 
-            logger.info("cleanup_duration_extracted",
-                       duration_seconds=cleanup_details["durationSeconds"],
-                       duration_minutes=cleanup_details["durationMinutes"])
+            logger.info(f"cleanup_duration_extracted duration_seconds={cleanup_details['durationSeconds']} duration_minutes={cleanup_details['durationMinutes']}")
         except Exception as duration_error:
-            logger.warning("cleanup_duration_extraction_failed", error=str(duration_error))
+            logger.warning(f"cleanup_duration_extraction_failed error={str(duration_error)}")
 
         # Reconcile billing before cleanup
         if cleanup_details["durationMinutes"] > 0:
             try:
                 from backend.shared.services import CreditService
 
-                logger.info("cleanup_billing_reconciliation_started",
-                           session_id=session_id,
-                           total_minutes=cleanup_details["durationMinutes"])
+                logger.info(f"cleanup_billing_reconciliation_started session_id={session_id} total_minutes={cleanup_details['durationMinutes']}")
 
                 reconcile_result = await CreditService.reconcile_session(
                     session_id,
@@ -293,22 +285,16 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                 cleanup_details["minutes_billed"] = reconcile_result.get("total_billed", 0)
 
                 if reconcile_result.get("success"):
-                    logger.info("cleanup_billing_reconciliation_success",
-                               total_billed=reconcile_result.get("total_billed"),
-                               minutes_billed_now=reconcile_result.get("minutes_billed"))
+                    logger.info(f"cleanup_billing_reconciliation_success total_billed={reconcile_result.get('total_billed')} minutes_billed_now={reconcile_result.get('minutes_billed')}")
                 else:
-                    logger.warning("cleanup_billing_reconciliation_failed",
-                                 message=reconcile_result.get("message"),
-                                 failed_minutes=reconcile_result.get("failed_minutes", []))
+                    logger.warning(f"cleanup_billing_reconciliation_failed message={reconcile_result.get('message')} failed_minutes={reconcile_result.get('failed_minutes', [])}")
                     cleanup_details["errors"].append(f"Billing reconciliation incomplete: {reconcile_result.get('message')}")
 
             except Exception as billing_error:
-                logger.error("cleanup_billing_reconciliation_error",
-                           error=str(billing_error),
-                           exc_info=True)
+                logger.error(f"cleanup_billing_reconciliation_error error={str(billing_error)}", exc_info=True)
                 cleanup_details["errors"].append(f"Billing reconciliation error: {str(billing_error)}")
 
-        logger.info("cleanup_started", session_id=session_id, session_data=session_data)
+        logger.info(f"cleanup_started session_id={session_id} session_data={session_data}")
 
         # 1. Revoke Celery task if exists
         task_id = session_data.get('celeryTaskId') or session_data.get('taskId')
@@ -316,11 +302,11 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             try:
                 celery_app.control.revoke(task_id, terminate=True)
                 cleanup_details["celery_task_revoked"] = True
-                logger.info("cleanup_celery_task_revoked", session_id=session_id, task_id=task_id)
+                logger.info(f"cleanup_celery_task_revoked session_id={session_id} task_id={task_id}")
             except Exception as e:
                 error_msg = f"Failed to revoke task {task_id}: {e}"
                 cleanup_details["errors"].append(error_msg)
-                logger.error("cleanup_celery_revoke_failed", session_id=session_id, task_id=task_id, error=str(e), exc_info=True)
+                logger.error(f"cleanup_celery_revoke_failed session_id={session_id} task_id={task_id} error={str(e)}", exc_info=True)
 
         # 2. Kill voice agent process
         pid_str = session_data.get('agentPid')
@@ -338,41 +324,25 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
 
                 # Verify process group setup
                 if pgid and pgid != pid:
-                    logger.warning("cleanup_pgid_mismatch",
-                                  session_id=session_id,
-                                  pid=pid,
-                                  pgid=pgid,
-                                  warning="Process may not be a group leader")
+                    logger.warning(f"cleanup_pgid_mismatch session_id={session_id} pid={pid} pgid={pgid} warning='Process may not be a group leader'")
 
                 # First, give agent 3 seconds to self-terminate via disconnect handlers
                 # Agent's on_participant_left triggers task.cancel() which should cleanly exit
-                logger.info("cleanup_waiting_for_self_termination",
-                           session_id=session_id,
-                           pid=pid,
-                           wait_seconds=3)
+                logger.info(f"cleanup_waiting_for_self_termination session_id={session_id} pid={pid} wait_seconds=3")
                 await asyncio.sleep(3)
 
                 # Check if agent self-terminated
                 try:
                     os.kill(pid, 0)  # Check if process exists
-                    logger.info("cleanup_agent_still_running_sending_sigterm",
-                               session_id=session_id,
-                               pid=pid)
+                    logger.info(f"cleanup_agent_still_running_sending_sigterm session_id={session_id} pid={pid}")
                 except ProcessLookupError:
-                    logger.info("cleanup_agent_self_terminated",
-                               session_id=session_id,
-                               pid=pid)
+                    logger.info(f"cleanup_agent_self_terminated session_id={session_id} pid={pid}")
                     cleanup_details["process_killed"] = True
                     cleanup_details["self_terminated"] = True
                     # Agent already dead, skip SIGTERM
                     return cleanup_details
 
-                logger.info("cleanup_killing_process",
-                           session_id=session_id,
-                           pid=pid,
-                           pgid=pgid,
-                           is_group_leader=(pgid == pid if pgid else "unknown"),
-                           signal="SIGTERM")
+                logger.info(f"cleanup_killing_process session_id={session_id} pid={pid} pgid={pgid} is_group_leader={pgid == pid if pgid else 'unknown'} signal='SIGTERM'")
 
                 # Send SIGTERM to entire process group
                 try:
@@ -387,19 +357,19 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                     # Check if still alive, send SIGKILL
                     try:
                         os.kill(pid, 0)  # Just check if exists
-                        logger.warning("cleanup_process_still_alive", session_id=session_id, pid=pid, signal="SIGKILL")
+                        logger.warning(f"cleanup_process_still_alive session_id={session_id} pid={pid} signal='SIGKILL'")
                         os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
                     except ProcessLookupError:
-                        logger.info("cleanup_process_terminated_gracefully", session_id=session_id, pid=pid)
+                        logger.info(f"cleanup_process_terminated_gracefully session_id={session_id} pid={pid}")
 
                 except ProcessLookupError:
-                    logger.info("cleanup_process_already_dead", session_id=session_id, pid=pid)
+                    logger.info(f"cleanup_process_already_dead session_id={session_id} pid={pid}")
                     cleanup_details["process_killed"] = True
 
             except Exception as e:
                 error_msg = f"Failed to kill process {pid_str}: {e}"
                 cleanup_details["errors"].append(error_msg)
-                logger.error("cleanup_kill_process_failed", session_id=session_id, pid=pid_str, error=str(e), exc_info=True)
+                logger.error(f"cleanup_kill_process_failed session_id={session_id} pid={pid_str} error={str(e)}", exc_info=True)
 
         # 3. Clean up Redis keys
         try:
@@ -425,20 +395,20 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
             redis_client.srem('session:starting', session_id)
 
             cleanup_details["redis_cleaned"] = True
-            logger.info("cleanup_redis_cleaned", session_id=session_id, keys_deleted=len(keys_to_delete))
+            logger.info(f"cleanup_redis_cleaned session_id={session_id} keys_deleted={len(keys_to_delete)}")
 
         except Exception as e:
             error_msg = f"Failed to clean Redis: {e}"
             cleanup_details["errors"].append(error_msg)
-            logger.error("cleanup_redis_failed", session_id=session_id, error=str(e), exc_info=True)
+            logger.error(f"cleanup_redis_failed session_id={session_id} error={str(e)}", exc_info=True)
 
-        logger.info("cleanup_complete", session_id=session_id, details=cleanup_details)
+        logger.info(f"cleanup_complete session_id={session_id} details={cleanup_details}")
         return cleanup_details
 
     except Exception as e:
         error_msg = f"Cleanup failed: {e}"
         cleanup_details["errors"].append(error_msg)
-        logger.error("cleanup_failed", session_id=session_id, error=str(e), exc_info=True)
+        logger.error(f"cleanup_failed session_id={session_id} error={str(e)}", exc_info=True)
         return cleanup_details
 
 # API Endpoints
@@ -480,28 +450,21 @@ async def start_session(request: SessionStartRequest):
         # Use correlation token as session ID if provided, otherwise generate one
         if request.correlationToken:
             session_id = request.correlationToken
-            logger.info("session_using_correlation_token", correlation_token=request.correlationToken)
+            logger.info(f"session_using_correlation_token correlation_token={request.correlationToken}")
         else:
             session_id = generate_session_id()
 
         # Validate and normalize voice ID
         requested_voice = request.voiceId or "Ashley"
         if requested_voice not in VALID_VOICES:
-            logger.warning("invalid_voice_requested",
-                          requested_voice=requested_voice,
-                          valid_voices=VALID_VOICES,
-                          fallback="Ashley")
+            logger.warning(f"invalid_voice_requested requested_voice={requested_voice} valid_voices={VALID_VOICES} fallback='Ashley'")
             voice_id = "Ashley"
         else:
             voice_id = requested_voice
 
-        # Use LogContext for request correlation
-        with LogContext(session_id=session_id, user_name=request.userName):
-            logger.info("session_start_requested",
-                       voice_id=voice_id,
-                       voice_requested=requested_voice,
-                       voice_validated=voice_id == requested_voice,
-                       opening_line=request.openingLine or 'default')
+        # Removed LogContext wrapper
+        if True:  # Removed LogContext wrapper
+            logger.info(f"session_start_requested session_id={session_id} user_name={request.userName} voice_id={voice_id} voice_requested={requested_voice} voice_validated={voice_id == requested_voice} opening_line={request.openingLine or 'default'}")
 
             # ==================== CREDIT CHECK AND DEDUCTION (Minute 0) ====================
             # Check and deduct 1 credit BEFORE creating session
@@ -511,8 +474,7 @@ async def start_session(request: SessionStartRequest):
                 student_id = await CreditService.get_student_id_from_session(session_id)
 
                 if not student_id:
-                    logger.error("session_start_student_not_found",
-                                correlation_token=session_id)
+                    logger.error(f"session_start_student_not_found correlation_token={session_id}")
                     raise HTTPException(
                         status_code=404,
                         detail="No student found for this simulation attempt"
@@ -522,41 +484,31 @@ async def start_session(request: SessionStartRequest):
                 has_credits = await CreditService.check_sufficient_credits(student_id, 1)
 
                 if not has_credits:
-                    logger.warning("session_start_insufficient_credits",
-                                  student_id=student_id)
+                    logger.warning(f"session_start_insufficient_credits student_id={student_id}")
                     raise HTTPException(
                         status_code=402,  # Payment Required
                         detail="Insufficient credits to start session. You need at least 1 credit."
                     )
 
                 # Deduct 1 credit for minute 0 (initial charge)
-                logger.info("session_start_billing_minute_0",
-                           student_id=student_id)
+                logger.info(f"session_start_billing_minute_0 student_id={student_id}")
 
                 billing_result = await CreditService.deduct_minute(session_id, minute_number=0)
 
                 if billing_result['result'] != CreditDeductionResult.SUCCESS:
-                    logger.error("session_start_billing_failed",
-                               student_id=student_id,
-                               result=billing_result['result'].value,
-                               message=billing_result.get('message'))
+                    logger.error(f"session_start_billing_failed student_id={student_id} result={billing_result['result'].value} message={billing_result.get('message')}")
                     raise HTTPException(
                         status_code=500,
                         detail=f"Failed to process initial credit charge: {billing_result.get('message')}"
                     )
 
-                logger.info("session_start_billing_success",
-                           student_id=student_id,
-                           credits_remaining=billing_result.get('balance_after'),
-                           minute_billed=0)
+                logger.info(f"session_start_billing_success student_id={student_id} credits_remaining={billing_result.get('balance_after')} minute_billed=0")
 
             except HTTPException:
                 # Re-raise HTTP exceptions (404, 402, 500)
                 raise
             except Exception as e:
-                logger.error("session_start_billing_error",
-                           error=str(e),
-                           exc_info=True)
+                logger.error(f"session_start_billing_error error={str(e)}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
                     detail=f"Credit system error: {str(e)}"
@@ -567,7 +519,7 @@ async def start_session(request: SessionStartRequest):
             try:
                 token = generate_livekit_token(session_id, request.userName)
             except Exception as e:
-                logger.error("session_token_generation_failed", error=str(e), exc_info=True)
+                logger.error(f"session_token_generation_failed error={str(e)}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
                     detail=f"LiveKit token generation failed: {str(e)}"
@@ -590,17 +542,10 @@ async def start_session(request: SessionStartRequest):
 
             redis_client.hset(config_key, mapping=config_data)
             redis_client.expire(config_key, 14400)  # 4 hour TTL same as session
-            logger.info("session_config_stored",
-                       session_id=session_id,
-                       user_name=request.userName,
-                       voice_id=voice_id,
-                       config_keys=list(config_data.keys()))
+            logger.info(f"session_config_stored session_id={session_id} user_name={request.userName} voice_id={voice_id} config_keys={list(config_data.keys())}")
         except Exception as e:
             # Non-fatal, just log
-            logger.warning("session_config_store_failed",
-                          session_id=session_id,
-                          user_name=request.userName,
-                          error=str(e))
+            logger.warning(f"session_config_store_failed session_id={session_id} user_name={request.userName} error={str(e)}")
 
         # Trigger Celery task to spawn voice agent
         try:
@@ -609,9 +554,9 @@ async def start_session(request: SessionStartRequest):
                 user_id=request.userName
             )
             task_id = task.id
-            logger.info("celery_task_queued", task_id=task_id)
+            logger.info(f"celery_task_queued task_id={task_id}")
         except Exception as e:
-            logger.error("celery_task_failed", error=str(e), exc_info=True)
+            logger.error(f"celery_task_failed error={str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to queue voice agent spawn task: {str(e)}"
@@ -632,15 +577,12 @@ async def start_session(request: SessionStartRequest):
             redis_client.hset(session_key, mapping=session_data)
             redis_client.expire(session_key, 14400)  # 4 hours
 
-            logger.info("session_state_stored", ttl_seconds=14400)
+            logger.info(f"session_state_stored ttl_seconds=14400")
         except Exception as e:
             # Non-fatal for now, but log prominently
-            logger.warning("session_state_store_failed", error=str(e),
-                         warning="Cleanup may not work properly")
+            logger.warning(f"session_state_store_failed error={str(e)} warning='Cleanup may not work properly'")
 
-        logger.info("session_started",
-                   voice_id=request.voiceId or 'Ashley',
-                   opening_line=request.openingLine or 'default')
+        logger.info(f"session_started voice_id={request.voiceId or 'Ashley'} opening_line={request.openingLine or 'default'}")
 
         return SessionStartResponse(
             success=True,
@@ -658,7 +600,7 @@ async def start_session(request: SessionStartRequest):
         # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error("session_start_unexpected_error", session_id=session_id, error=str(e), exc_info=True)
+        logger.error(f"session_start_unexpected_error session_id={session_id} error={str(e)}", exc_info=True)
         # Attempt cleanup if session was partially created
         if session_id:
             try:
@@ -690,31 +632,31 @@ async def end_session(request: SessionEndRequest):
     try:
         session_id = request.sessionId
 
-        with LogContext(session_id=session_id):
+        if True:  # Removed LogContext wrapper
             # Check if session exists
             session_exists = redis_client.exists(f"session:{session_id}")
             if not session_exists:
-                logger.warning("session_not_found")
+                logger.warning(f"session_not_found session_id={session_id}")
                 raise HTTPException(
                     status_code=404,
                     detail=f"Session {session_id} not found"
                 )
 
-            logger.info("session_end_requested")
+            logger.info(f"session_end_requested session_id={session_id}")
 
             # Perform cleanup
             cleanup_details = await cleanup_session(session_id)
 
             # Check if cleanup had errors
             if cleanup_details["errors"]:
-                logger.warning("session_ended_with_errors", errors=cleanup_details['errors'])
+                logger.warning(f"session_ended_with_errors session_id={session_id} errors={cleanup_details['errors']}")
                 return SessionEndResponse(
                     success=True,  # Still return success if partial cleanup worked
                     message=f"Session {session_id} ended with warnings",
                     details=cleanup_details
                 )
 
-            logger.info("session_ended_successfully")
+            logger.info(f"session_ended_successfully session_id={session_id}")
             return SessionEndResponse(
                 success=True,
                 message=f"Session {session_id} ended and cleaned up",
@@ -724,7 +666,7 @@ async def end_session(request: SessionEndRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("session_end_failed", session_id=request.sessionId, error=str(e), exc_info=True)
+        logger.error(f"session_end_failed session_id={request.sessionId} error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to end session: {str(e)}"
@@ -756,14 +698,14 @@ async def heartbeat(request: HeartbeatRequest):
     session_id = request.sessionId
 
     try:
-        with LogContext(session_id=session_id):
-            logger.debug("heartbeat_received")
+        if True:  # Removed LogContext wrapper
+            logger.debug(f"heartbeat_received session_id={session_id}")
 
             # Get session data from Redis
             session_data = redis_client.hgetall(f"session:{session_id}")
 
             if not session_data:
-                logger.warning("heartbeat_session_not_found")
+                logger.warning(f"heartbeat_session_not_found session_id={session_id}")
                 raise HTTPException(
                     status_code=404,
                     detail=f"Session {session_id} not found"
@@ -780,7 +722,7 @@ async def heartbeat(request: HeartbeatRequest):
             # Get conversation start time
             conversation_start_time = session_data.get('conversationStartTime')
             if not conversation_start_time:
-                logger.warning("heartbeat_no_conversation_start_time")
+                logger.warning(f"heartbeat_no_conversation_start_time session_id={session_id}")
                 return HeartbeatResponse(
                     status="error",
                     message="No conversation start time found"
@@ -795,15 +737,12 @@ async def heartbeat(request: HeartbeatRequest):
             # Minute 0 was billed at session start, so heartbeat bills 1, 2, 3...
             billing_minute = current_minute
 
-            logger.debug("heartbeat_timing",
-                        elapsed_seconds=elapsed_seconds,
-                        current_minute=current_minute,
-                        billing_minute=billing_minute)
+            logger.debug(f"heartbeat_timing session_id={session_id} elapsed_seconds={elapsed_seconds} current_minute={current_minute} billing_minute={billing_minute}")
 
             # Don't bill if we're still in minute 0 (< 60 seconds elapsed)
             # Minute 0 was already billed at session start
             if current_minute == 0:
-                logger.debug("heartbeat_first_minute_skip")
+                logger.debug(f"heartbeat_first_minute_skip session_id={session_id}")
                 return HeartbeatResponse(
                     status="ok",
                     message="Minute 0 already billed at session start"
@@ -815,9 +754,7 @@ async def heartbeat(request: HeartbeatRequest):
 
                 # Check result status
                 if result['result'] == CreditDeductionResult.SUCCESS:
-                    logger.info("heartbeat_billing_success",
-                               minute=billing_minute,
-                               balance_after=result.get('balance_after'))
+                    logger.info(f"heartbeat_billing_success session_id={session_id} minute={billing_minute} balance_after={result.get('balance_after')}")
 
                     return HeartbeatResponse(
                         status="ok",
@@ -828,7 +765,7 @@ async def heartbeat(request: HeartbeatRequest):
                     )
 
                 elif result['result'] == CreditDeductionResult.ALREADY_BILLED:
-                    logger.debug("heartbeat_already_billed", minute=billing_minute)
+                    logger.debug(f"heartbeat_already_billed session_id={session_id} minute={billing_minute}")
 
                     return HeartbeatResponse(
                         status="ok",
@@ -839,9 +776,7 @@ async def heartbeat(request: HeartbeatRequest):
 
                 elif result['result'] == CreditDeductionResult.INSUFFICIENT_CREDITS:
                     # Insufficient credits - tell agent to stop
-                    logger.warning("heartbeat_insufficient_credits",
-                                 minute=billing_minute,
-                                 balance=result.get('balance', 0))
+                    logger.warning(f"heartbeat_insufficient_credits session_id={session_id} minute={billing_minute} balance={result.get('balance', 0)}")
 
                     # Trigger session termination (async, don't wait)
                     asyncio.create_task(terminate_session_insufficient_credits(session_id))
@@ -855,9 +790,7 @@ async def heartbeat(request: HeartbeatRequest):
 
                 else:
                     # Other errors (session not found, student not found, etc.)
-                    logger.error("heartbeat_billing_failed",
-                               result=result['result'].value,
-                               message=result.get('message'))
+                    logger.error(f"heartbeat_billing_failed session_id={session_id} result={result['result'].value} message={result.get('message')}")
 
                     return HeartbeatResponse(
                         status="error",
@@ -865,9 +798,7 @@ async def heartbeat(request: HeartbeatRequest):
                     )
 
             except Exception as billing_error:
-                logger.error("heartbeat_billing_exception",
-                           error=str(billing_error),
-                           exc_info=True)
+                logger.error(f"heartbeat_billing_exception session_id={session_id} error={str(billing_error)}", exc_info=True)
 
                 return HeartbeatResponse(
                     status="error",
@@ -877,10 +808,7 @@ async def heartbeat(request: HeartbeatRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("heartbeat_failed",
-                    session_id=session_id,
-                    error=str(e),
-                    exc_info=True)
+        logger.error(f"heartbeat_failed session_id={session_id} error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Heartbeat failed: {str(e)}"
@@ -912,16 +840,16 @@ async def livekit_webhook(request: Request, x_livekit_signature: Optional[str] =
         # Verify signature
         if x_livekit_signature:
             if not verify_livekit_webhook(body, x_livekit_signature):
-                logger.warning("webhook_invalid_signature")
+                logger.warning(f"webhook_invalid_signature")
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         else:
-            logger.warning("webhook_no_signature", warning="Allowing for development")
+            logger.warning(f"webhook_no_signature warning='Allowing for development'")
 
         # Parse event
         try:
             event_data = json.loads(body.decode('utf-8'))
         except Exception as e:
-            logger.error("webhook_invalid_json", error=str(e), exc_info=True)
+            logger.error(f"webhook_invalid_json error={str(e)}", exc_info=True)
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
         event_type = event_data.get('event')
@@ -931,32 +859,29 @@ async def livekit_webhook(request: Request, x_livekit_signature: Optional[str] =
         room_name = room_data.get('name') or room_data.get('id')
         participant_identity = participant_data.get('identity')
 
-        logger.info("webhook_event_received",
-                   event_type=event_type,
-                   room=room_name,
-                   participant=participant_identity)
+        logger.info(f"webhook_event_received event_type={event_type} room={room_name} participant={participant_identity}")
 
         # Handle disconnect events
         if event_type in ['participant_left', 'room_finished']:
             if room_name and room_name.startswith('session_'):
                 session_id = room_name
 
-                with LogContext(session_id=session_id):
-                    logger.info("webhook_disconnect_detected", event_type=event_type)
+                if True:  # Removed LogContext wrapper
+                    logger.info(f"webhook_disconnect_detected session_id={session_id} event_type={event_type}")
 
                     # Trigger cleanup asynchronously
                     try:
                         cleanup_details = await cleanup_session(session_id)
-                        logger.info("webhook_cleanup_initiated", cleanup_details=cleanup_details)
+                        logger.info(f"webhook_cleanup_initiated session_id={session_id} cleanup_details={cleanup_details}")
                     except Exception as e:
-                        logger.error("webhook_cleanup_failed", error=str(e), exc_info=True)
+                        logger.error(f"webhook_cleanup_failed session_id={session_id} error={str(e)}", exc_info=True)
 
         return {"status": "ok", "event": event_type}
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("webhook_processing_error", error=str(e), exc_info=True)
+        logger.error(f"webhook_processing_error error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
 @app.get("/api/debug/session/{session_id}/processes")
@@ -1079,7 +1004,7 @@ async def debug_session_processes(session_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("debug_endpoint_error", session_id=session_id, error=str(e), exc_info=True)
+        logger.error(f"debug_endpoint_error session_id={session_id} error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Debug endpoint failed: {str(e)}"
@@ -1098,7 +1023,7 @@ async def list_sessions():
         Array of session objects with id, status, start_time, duration, etc.
     """
     try:
-        logger.info("admin_list_sessions_requested")
+        logger.info(f"admin_list_sessions_requested")
 
         # Get all session keys from Redis
         session_keys = redis_client.keys("session:*")
@@ -1167,7 +1092,7 @@ async def list_sessions():
 
         active_count = sum(1 for s in sessions if s['is_active'])
 
-        logger.info("admin_list_sessions_success", total=len(sessions), active=active_count)
+        logger.info(f"admin_list_sessions_success total={len(sessions)} active={active_count}")
 
         return {
             "sessions": sessions,
@@ -1176,7 +1101,7 @@ async def list_sessions():
         }
 
     except Exception as e:
-        logger.error("admin_list_sessions_failed", error=str(e), exc_info=True)
+        logger.error(f"admin_list_sessions_failed error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to list sessions: {str(e)}"
@@ -1196,7 +1121,7 @@ async def get_session_logs(session_id: str, limit: int = 100):
         Log entries for the session
     """
     try:
-        logger.info("admin_get_session_logs_requested", session_id=session_id, limit=limit)
+        logger.info(f"admin_get_session_logs_requested session_id={session_id} limit={limit}")
 
         # Get logs from Redis (stored by agent)
         log_key = f"agent:{session_id}:logs"
@@ -1219,7 +1144,7 @@ async def get_session_logs(session_id: str, limit: int = 100):
         if limit and limit > 0:
             parsed_logs = parsed_logs[-limit:]
 
-        logger.info("admin_get_session_logs_success", session_id=session_id, count=len(parsed_logs))
+        logger.info(f"admin_get_session_logs_success session_id={session_id} count={len(parsed_logs)}")
 
         return {
             "session_id": session_id,
@@ -1228,7 +1153,7 @@ async def get_session_logs(session_id: str, limit: int = 100):
         }
 
     except Exception as e:
-        logger.error("admin_get_session_logs_failed", session_id=session_id, error=str(e), exc_info=True)
+        logger.error(f"admin_get_session_logs_failed session_id={session_id} error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get session logs: {str(e)}"
@@ -1249,7 +1174,7 @@ async def get_orchestrator_logs(lines: int = 200):
     import subprocess
 
     try:
-        logger.info("admin_get_orchestrator_logs_requested", lines=lines)
+        logger.info(f"admin_get_orchestrator_logs_requested lines={lines}")
 
         logs = []
         log_source = None
@@ -1275,7 +1200,7 @@ async def get_orchestrator_logs(lines: int = 200):
                         except json.JSONDecodeError:
                             logs.append({"message": line.strip(), "raw": True})
 
-                logger.info("admin_orchestrator_logs_from_docker", count=len(logs))
+                logger.info(f"admin_orchestrator_logs_from_docker count={len(logs)}")
 
                 return {
                     "logs": logs,
@@ -1283,7 +1208,7 @@ async def get_orchestrator_logs(lines: int = 200):
                     "source": log_source
                 }
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError) as docker_error:
-            logger.debug("admin_docker_logs_unavailable", error=str(docker_error))
+            logger.debug(f"admin_docker_logs_unavailable error={str(docker_error)}")
 
         # Fallback: Check common log file locations
         log_paths = [
@@ -1308,10 +1233,10 @@ async def get_orchestrator_logs(lines: int = 200):
                                 logs.append({"message": line.strip(), "raw": True})
                     break
                 except Exception as read_error:
-                    logger.warning("admin_log_file_read_failed", file=log_file, error=str(read_error))
+                    logger.warning(f"admin_log_file_read_failed file={log_file} error={str(read_error)}")
 
         if not logs:
-            logger.warning("admin_no_orchestrator_logs_found")
+            logger.warning(f"admin_no_orchestrator_logs_found")
 
             # Provide helpful instructions
             instructions = [
@@ -1333,7 +1258,7 @@ async def get_orchestrator_logs(lines: int = 200):
                 "source": "instructions"
             }
 
-        logger.info("admin_get_orchestrator_logs_success", count=len(logs), source=log_source)
+        logger.info(f"admin_get_orchestrator_logs_success count={len(logs)} source={log_source}")
 
         return {
             "logs": logs,
@@ -1342,7 +1267,7 @@ async def get_orchestrator_logs(lines: int = 200):
         }
 
     except Exception as e:
-        logger.error("admin_get_orchestrator_logs_failed", error=str(e), exc_info=True)
+        logger.error(f"admin_get_orchestrator_logs_failed error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get orchestrator logs: {str(e)}"
@@ -1363,7 +1288,7 @@ async def get_celery_logs(lines: int = 200):
     import subprocess
 
     try:
-        logger.info("admin_get_celery_logs_requested", lines=lines)
+        logger.info(f"admin_get_celery_logs_requested lines={lines}")
 
         logs = []
         log_source = None
@@ -1391,7 +1316,7 @@ async def get_celery_logs(lines: int = 200):
                                 except json.JSONDecodeError:
                                     logs.append({"message": line.strip(), "raw": True})
 
-                    logger.info("admin_celery_logs_from_supervisor", count=len(logs), file=log_source)
+                    logger.info(f"admin_celery_logs_from_supervisor count={len(logs)} file={log_source}")
 
                     return {
                         "logs": logs,
@@ -1399,7 +1324,7 @@ async def get_celery_logs(lines: int = 200):
                         "source": log_source
                     }
                 except Exception as read_error:
-                    logger.warning("admin_supervisor_log_read_failed", file=matching_files[0], error=str(read_error))
+                    logger.warning(f"admin_supervisor_log_read_failed file={matching_files[0]} error={str(read_error)}")
 
         # Fallback: Try reading from Docker container logs
         try:
@@ -1422,7 +1347,7 @@ async def get_celery_logs(lines: int = 200):
                         except json.JSONDecodeError:
                             logs.append({"message": line.strip(), "raw": True})
 
-                logger.info("admin_celery_logs_from_docker", count=len(logs))
+                logger.info(f"admin_celery_logs_from_docker count={len(logs)}")
 
                 return {
                     "logs": logs,
@@ -1430,10 +1355,10 @@ async def get_celery_logs(lines: int = 200):
                     "source": log_source
                 }
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError) as docker_error:
-            logger.debug("admin_docker_logs_unavailable", error=str(docker_error))
+            logger.debug(f"admin_docker_logs_unavailable error={str(docker_error)}")
 
         # No logs found - provide helpful instructions
-        logger.warning("admin_no_celery_logs_found")
+        logger.warning(f"admin_no_celery_logs_found")
 
         instructions = [
             {"message": "Celery logs are sent to stdout/stderr (Docker logs)", "raw": True},
@@ -1451,7 +1376,7 @@ async def get_celery_logs(lines: int = 200):
         }
 
     except Exception as e:
-        logger.error("admin_get_celery_logs_failed", error=str(e), exc_info=True)
+        logger.error(f"admin_get_celery_logs_failed error={str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get Celery logs: {str(e)}"
@@ -1470,10 +1395,10 @@ async def health_check():
         redis_client.ping()
         redis_healthy = True
     except Exception as e:
-        logger.error("health_redis_check_failed", error=str(e), exc_info=True)
+        logger.error(f"health_redis_check_failed error={str(e)}", exc_info=True)
 
     status = "healthy" if redis_healthy else "degraded"
-    logger.info("health_check", status=status, redis_connected=redis_healthy)
+    logger.info(f"health_check status={status} redis_connected={redis_healthy}")
 
     return {
         "status": status,
