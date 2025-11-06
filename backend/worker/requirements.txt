@@ -1,0 +1,32 @@
+# Worker service dependencies (Celery workers + Agent spawning)
+
+# Celery task queue
+celery==5.3.4
+
+# Redis client for broker/backend and session management
+redis==5.0.1
+
+# Voice agent dependencies (required for subprocess spawning)
+pipecat-ai[livekit,inworld]==0.0.92
+assemblyai==0.44.3
+groq==0.9.0
+onnxruntime
+transformers
+torch
+
+# Database dependencies for transcript storage and credit checks
+asyncpg==0.29.0
+
+# HTTP client for agent heartbeat communication
+requests==2.31.0
+
+# Environment configuration
+python-dotenv==1.0.0
+
+# Logging dependencies (from shared common package)
+structlog>=23.0.0
+python-json-logger>=2.0.0
+loguru
+
+# Async HTTP client (from shared common package)
+aiohttp

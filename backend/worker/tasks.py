@@ -1,10 +1,12 @@
 """
-Celery tasks for voice agent orchestration.
+Worker service Celery tasks.
 
-This module defines asynchronous tasks for:
-- Spawning voice agents
-- Health checking running agents
-- Cleaning up stale sessions
+This module contains tasks migrated from backend/orchestrator/tasks.py:
+- spawn_voice_agent: Spawn voice agent subprocess
+- health_check_agents: Monitor agent health (periodic)
+- cleanup_stale_agents: Clean up stale sessions (periodic)
+
+The worker service runs these tasks independently from the orchestrator.
 """
 
 from celery import Celery, Task
@@ -24,8 +26,8 @@ from backend.common.session_store import SessionStore
 logger = setup_logging(service_name='celery-worker')
 
 # Initialize Celery
-app = Celery('voice_agent_tasks')
-app.config_from_object('backend.orchestrator.celeryconfig')
+app = Celery('voice_agent_worker')
+app.config_from_object('backend.worker.celeryconfig')
 
 # Redis client
 redis_client = redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))

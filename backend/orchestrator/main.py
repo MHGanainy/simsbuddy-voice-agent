@@ -22,9 +22,9 @@ from pydantic import BaseModel
 from livekit import api
 import redis
 
-# Import Celery app and tasks
+# Import Celery and worker tasks
 from celery import Celery
-from backend.orchestrator.tasks import spawn_voice_agent
+from backend.worker.tasks import spawn_voice_agent
 
 # Import structured logging
 from backend.common.logging_config import setup_logging, LogContext

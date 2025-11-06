@@ -1,11 +1,13 @@
-# Backend Orchestrator Dockerfile - Railway Compatible
+# Backend Orchestrator Dockerfile - FastAPI Server Only
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies: ffmpeg, supervisor, docker client for log viewing
+# Install minimal system dependencies for orchestrator
+# - supervisor: Process manager for FastAPI
+# - curl: Health checks and debugging
 RUN apt-get update && \
-    apt-get install -y supervisor ffmpeg curl docker.io && \
+    apt-get install -y supervisor curl && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -13,13 +15,10 @@ RUN apt-get update && \
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
-# Copy and install orchestrator dependencies
+# Copy and install orchestrator dependencies only
+# Note: Includes Celery as a client for publishing tasks to worker queue
 COPY backend/orchestrator/requirements.txt /app/backend/orchestrator/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/orchestrator/requirements.txt
-
-# Copy and install agent dependencies (needed for subprocess spawning)
-COPY backend/agent/requirements.txt /app/backend/agent/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/agent/requirements.txt
 
 # Copy entire backend codebase to /app/backend (consistent with docker-compose volume mount)
 COPY backend/ /app/backend/
@@ -30,7 +29,7 @@ COPY backend/supervisord.conf /app/supervisord.conf
 # Create log directories (use /tmp for Railway ephemeral storage)
 RUN mkdir -p /tmp/supervisor
 
-# Set working directory to orchestrator (for uvicorn and celery commands)
+# Set working directory to orchestrator (for uvicorn commands)
 WORKDIR /app/backend/orchestrator
 
 # Expose port (Railway will inject $PORT at runtime)
@@ -38,9 +37,12 @@ EXPOSE 8000
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
-    C_FORCE_ROOT=true \
-    PYTHONPATH=/app \
-    PYTHON_SCRIPT_PATH=/app/backend/agent/voice_assistant.py
+    PYTHONPATH=/app
 
-# Start supervisor (runs FastAPI + Celery worker + Celery beat)
+# Health check: Verify FastAPI is responding
+# Check every 30s, timeout after 5s, start checking after 10s
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+
+# Start supervisor (runs FastAPI only - workers run in separate service)
 CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]

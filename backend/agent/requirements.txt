@@ -1,14 +1,31 @@
-# Voice agent dependencies (Pipecat + AI services)
-pipecat-ai[livekit,inworld]==0.0.92
-assemblyai==0.44.3
-groq==0.9.0
-onnxruntime
-transformers
-torch
+# Voice Agent Dependencies
+#
+# NOTE: These dependencies are installed in the WORKER service, not orchestrator.
+# The agent runs as a subprocess spawned by Celery workers.
+#
+# This file documents agent-specific dependencies and is included in
+# backend/worker/requirements.txt during worker Docker build.
+#
+# Do NOT remove this file - it serves as the canonical reference for
+# what the voice agent subprocess needs to run.
 
-# Database dependencies for transcript storage
+# Pipecat framework + integrations (LiveKit, Inworld TTS)
+pipecat-ai[livekit,inworld]==0.0.92
+
+# Speech-to-Text (AssemblyAI streaming)
+assemblyai==0.44.3
+
+# LLM (Groq for fast inference)
+groq==0.9.0
+
+# ML dependencies for audio processing
+onnxruntime        # VAD (Voice Activity Detection)
+transformers       # NLP models
+torch              # PyTorch for ML models
+
+# Database for transcript storage
 asyncpg==0.29.0
 python-dotenv==1.0.0
 
-# HTTP client for heartbeat billing
+# HTTP client for heartbeat billing callbacks to orchestrator
 requests==2.31.0
