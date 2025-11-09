@@ -301,7 +301,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                         audio_in_enabled=True,
                         audio_out_enabled=True,
                         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-                        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+                        # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
                     ),
                 )
                 logger.info("livekit_transport_created")
@@ -443,12 +443,12 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             [
                 transport.input(),  # Transport user input
                 stt,
-                transcript_processor.user(),  # Capture user transcripts
+                # transcript_processor.user(),  # Capture user transcripts
                 context_aggregator.user(),  # User responses
                 llm,  # LLM
                 tts,  # TTS
                 transport.output(),  # Transport bot output
-                transcript_processor.assistant(),  # Capture assistant transcripts
+                # transcript_processor.assistant(),  # Capture assistant transcripts
                 context_aggregator.assistant(),  # Assistant spoken responses
             ]
         )
