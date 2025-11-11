@@ -152,6 +152,51 @@ def log_timing(message: str):
         logger.debug(f"TIMING: {message}")
 
 
+class TranscriptionReporter:
+    """Helper to send transcription events to frontend for latency tracking"""
+    
+    def __init__(self, transport):
+        self.transport = transport
+        logger.info("TranscriptionReporter initialized")
+    
+    async def report_user_transcript(self, text: str, timestamp: float = None):
+        """Send user transcription to frontend for latency tracking"""
+        try:
+            if timestamp is None:
+                timestamp = asyncio.get_event_loop().time()
+            
+            data = json.dumps({
+                "type": "transcription",
+                "speaker": "user",
+                "text": text,
+                "timestamp": timestamp
+            })
+            
+            # Send via LiveKit data channel
+            await self.transport.send_message(data)
+            logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
+        except Exception as e:
+            logger.error(f"Failed to send user transcript to frontend: {e}", exc_info=True)
+    
+    async def report_assistant_transcript(self, text: str, timestamp: float = None):
+        """Send assistant transcription to frontend (optional)"""
+        try:
+            if timestamp is None:
+                timestamp = asyncio.get_event_loop().time()
+            
+            data = json.dumps({
+                "type": "transcription",
+                "speaker": "assistant",
+                "text": text,
+                "timestamp": timestamp
+            })
+            
+            await self.transport.send_message(data)
+            logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
+        except Exception as e:
+            logger.error(f"Failed to send assistant transcript to frontend: {e}", exc_info=True)
+
+
 class TranscriptStorage:
     """Collects transcripts from Pipecat processor for database persistence"""
 
@@ -418,6 +463,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         logger.info(f"context_aggregator_configured aggregation_timeout={AGGREGATION_TIMEOUT} interruption_timeout={BOT_INTERRUPTION_TIMEOUT}")
 
+        # Create transcription reporter for frontend latency tracking
+        transcription_reporter = TranscriptionReporter(transport)
+        
         # Create transcript processor and storage
         transcript_processor = TranscriptProcessor()
         transcript_storage = TranscriptStorage(room_name)
@@ -437,18 +485,25 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     # Store in transcript storage
                     transcript_storage.add_message(role, content, timestamp)
                     logger.debug(f"Transcript captured: {role[:10]}: {content[:50]}...")
+                    
+                    # Send user transcripts to frontend for latency tracking
+                    if role == 'user' and content:
+                        await transcription_reporter.report_user_transcript(content)
+                    # Optionally send assistant transcripts too
+                    elif role == 'assistant' and content:
+                        await transcription_reporter.report_assistant_transcript(content)
 
         # Build pipeline with transcript processors
         pipeline = Pipeline(
             [
                 transport.input(),  # Transport user input
                 stt,
-                # transcript_processor.user(),  # Capture user transcripts
+                transcript_processor.user(),  # Capture user transcripts
                 context_aggregator.user(),  # User responses
                 llm,  # LLM
                 tts,  # TTS
                 transport.output(),  # Transport bot output
-                # transcript_processor.assistant(),  # Capture assistant transcripts
+                transcript_processor.assistant(),  # Capture assistant transcripts
                 context_aggregator.assistant(),  # Assistant spoken responses
             ]
         )
