@@ -1,3 +1,13 @@
+import sys
+
+# Force all output to go to stdout (Railway will capture this)
+sys.stdout = sys.__stdout__
+sys.stderr = sys.__stderr__
+
+# Ensure unbuffered output
+import os
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 import asyncio
 import json
 import os
@@ -40,6 +50,13 @@ from pipecat.services.inworld.tts import InworldTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
+
+print("\n" + "=" * 80)
+print("🚀 VOICE ASSISTANT PROCESS STARTED!")
+print(f"   Process ID: {os.getpid()}")
+print(f"   Timestamp: {datetime.now().isoformat()}")
+print("=" * 80 + "\n")
+sys.stdout.flush()
 
 load_dotenv(override=True)
 
