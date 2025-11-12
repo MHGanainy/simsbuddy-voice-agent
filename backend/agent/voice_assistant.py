@@ -1,17 +1,15 @@
 import sys
+import os
 
 # Force all output to go to stdout (Railway will capture this)
 sys.stdout = sys.__stdout__
 sys.stderr = sys.__stderr__
 
 # Ensure unbuffered output
-import os
 os.environ['PYTHONUNBUFFERED'] = '1'
 
 import asyncio
 import json
-import os
-import sys
 import signal
 import argparse
 import math
@@ -177,11 +175,13 @@ class TranscriptionReporter:
         print("\n" + "=" * 80)
         print("🔔 TRANSCRIPTION REPORTER INITIALIZED!")
         print("=" * 80 + "\n")
+        sys.stdout.flush()
         logger.info("TranscriptionReporter initialized")
     
     async def report_user_transcript(self, text: str, timestamp: float = None):
         """Send user transcription to frontend for latency tracking"""
         print(f"\n📤 ATTEMPTING TO SEND USER TRANSCRIPT: {text[:50]}...")
+        sys.stdout.flush()
         try:
             if timestamp is None:
                 timestamp = asyncio.get_event_loop().time()
@@ -195,27 +195,32 @@ class TranscriptionReporter:
             
             print(f"📦 Data prepared: {len(data)} bytes")
             print(f"🚀 Calling transport.send_data()...")
+            sys.stdout.flush()
             
             # Send via LiveKit data channel
             await self.transport.send_data(data.encode('utf-8'))
             
             print(f"✅ SUCCESS! User transcript sent to frontend")
+            sys.stdout.flush()
             logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
         except AttributeError as attr_err:
             print(f"❌ ATTRIBUTE ERROR: {attr_err}")
             print(f"   Transport type: {type(self.transport)}")
             print(f"   Available methods: {[m for m in dir(self.transport) if not m.startswith('_')][:10]}")
+            sys.stdout.flush()
             logger.error(f"AttributeError sending user transcript: {attr_err}", exc_info=True)
         except Exception as e:
             print(f"❌ FAILED TO SEND USER TRANSCRIPT: {e}")
             print(f"   Exception type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
             logger.error(f"Failed to send user transcript to frontend: {e}", exc_info=True)
     
     async def report_assistant_transcript(self, text: str, timestamp: float = None):
         """Send assistant transcription to frontend (optional)"""
         print(f"\n📤 ATTEMPTING TO SEND ASSISTANT TRANSCRIPT: {text[:50]}...")
+        sys.stdout.flush()
         try:
             if timestamp is None:
                 timestamp = asyncio.get_event_loop().time()
@@ -228,13 +233,16 @@ class TranscriptionReporter:
             })
             
             print(f"📦 Data prepared: {len(data)} bytes")
+            sys.stdout.flush()
             
             await self.transport.send_data(data.encode('utf-8'))
             
             print(f"✅ SUCCESS! Assistant transcript sent to frontend")
+            sys.stdout.flush()
             logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
         except Exception as e:
             print(f"❌ FAILED TO SEND ASSISTANT TRANSCRIPT: {e}")
+            sys.stdout.flush()
             logger.error(f"Failed to send assistant transcript to frontend: {e}", exc_info=True)
 
 
@@ -519,9 +527,11 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             print("\n" + "=" * 80)
             print("🔔 TRANSCRIPT EVENT HANDLER FIRED!")
             print("=" * 80)
+            sys.stdout.flush()
             
             if hasattr(transcript, 'messages'):
                 print(f"📝 Transcript has {len(transcript.messages)} messages")
+                sys.stdout.flush()
                 for message in transcript.messages:
                     # Extract message details
                     role = getattr(message, 'role', 'unknown')
@@ -530,6 +540,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
                     print(f"   Role: {role}")
                     print(f"   Content: {content[:100]}")
+                    sys.stdout.flush()
 
                     # Store in transcript storage
                     transcript_storage.add_message(role, content, timestamp)
@@ -538,15 +549,18 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     # Send user transcripts to frontend for latency tracking
                     if role == 'user' and content:
                         print(f"🚀 Calling report_user_transcript...")
+                        sys.stdout.flush()
                         await transcription_reporter.report_user_transcript(content)
                     # Optionally send assistant transcripts too
                     elif role == 'assistant' and content:
                         print(f"🤖 Calling report_assistant_transcript...")
+                        sys.stdout.flush()
                         await transcription_reporter.report_assistant_transcript(content)
             else:
                 print("⚠️ Transcript has no 'messages' attribute")
                 print(f"   Transcript type: {type(transcript)}")
                 print(f"   Transcript attrs: {[a for a in dir(transcript) if not a.startswith('_')][:10]}")
+                sys.stdout.flush()
 
         # Build pipeline with transcript processors
         pipeline = Pipeline(

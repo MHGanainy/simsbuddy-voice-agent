@@ -17,6 +17,7 @@ import os
 import uuid
 import signal
 import threading
+import sys  # ← ADD THIS IMPORT
 
 # Import simplified logging
 from backend.shared.logging_config import setup_logging
@@ -77,6 +78,10 @@ def continuous_log_reader(process, session_id, log_file_path):
 
                 # Write to file (for tail -f and long-term storage)
                 log_file.write(line + '\n')
+                
+                # ✨ NEW: ALSO print to stdout so Railway captures it!
+                print(f"[AGENT-{session_id[:12]}] {line}")
+                sys.stdout.flush()  # Force immediate output
 
                 # Store in Redis (for API access, keep last 100 lines)
                 try:
