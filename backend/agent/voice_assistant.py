@@ -174,6 +174,30 @@ class TranscriptionReporter:
         self.transport = transport
         print("\n" + "=" * 80)
         print("🔔 TRANSCRIPTION REPORTER INITIALIZED!")
+        print("   Inspecting LiveKitTransport for data sending methods...")
+        
+        # Inspect ALL attributes (including private ones)
+        all_attrs = dir(transport)
+        print(f"   Total attributes: {len(all_attrs)}")
+        
+        # Look for room-related attributes
+        room_attrs = [a for a in all_attrs if 'room' in a.lower()]
+        print(f"   Room-related: {room_attrs}")
+        
+        # Look for send/publish/data methods
+        send_attrs = [a for a in all_attrs if any(word in a.lower() for word in ['send', 'publish', 'data', 'message'])]
+        print(f"   Send/publish methods: {send_attrs}")
+        
+        # Check for specific attributes we might need
+        for attr in ['_room', 'room', '_lk_room', 'lk_room', '_session', 'session']:
+            has_it = hasattr(transport, attr)
+            print(f"   Has '{attr}'? {has_it}")
+            if has_it:
+                obj = getattr(transport, attr)
+                print(f"     Type: {type(obj)}")
+                if hasattr(obj, 'local_participant'):
+                    print(f"     Has local_participant? True")
+        
         print("=" * 80 + "\n")
         sys.stdout.flush()
         logger.info("TranscriptionReporter initialized")
@@ -194,25 +218,91 @@ class TranscriptionReporter:
             })
             
             print(f"📦 Data prepared: {len(data)} bytes")
-            print(f"🚀 Accessing transport._room.local_participant...")
+            print(f"🔍 Searching for correct way to send data...")
             sys.stdout.flush()
             
-            # Send via LiveKit's underlying room object
-            await self.transport._room.local_participant.publish_data(
-                data.encode('utf-8'),
-                reliable=True
-            )
+            # Try multiple possible paths
+            sent = False
             
-            print(f"✅ SUCCESS! User transcript sent to frontend")
-            sys.stdout.flush()
-            logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
+            # Try 1: _room
+            if hasattr(self.transport, '_room') and self.transport._room:
+                print(f"🚀 Method 1: Using _room...")
+                sys.stdout.flush()
+                await self.transport._room.local_participant.publish_data(
+                    data.encode('utf-8'),
+                    reliable=True
+                )
+                sent = True
+                print(f"✅ Method 1 SUCCESS!")
+            
+            # Try 2: room (public)
+            elif hasattr(self.transport, 'room') and self.transport.room:
+                print(f"🚀 Method 2: Using room...")
+                sys.stdout.flush()
+                await self.transport.room.local_participant.publish_data(
+                    data.encode('utf-8'),
+                    reliable=True
+                )
+                sent = True
+                print(f"✅ Method 2 SUCCESS!")
+            
+            # Try 3: _lk_room
+            elif hasattr(self.transport, '_lk_room') and self.transport._lk_room:
+                print(f"🚀 Method 3: Using _lk_room...")
+                sys.stdout.flush()
+                await self.transport._lk_room.local_participant.publish_data(
+                    data.encode('utf-8'),
+                    reliable=True
+                )
+                sent = True
+                print(f"✅ Method 3 SUCCESS!")
+            
+            # Try 4: lk_room
+            elif hasattr(self.transport, 'lk_room') and self.transport.lk_room:
+                print(f"🚀 Method 4: Using lk_room...")
+                sys.stdout.flush()
+                await self.transport.lk_room.local_participant.publish_data(
+                    data.encode('utf-8'),
+                    reliable=True
+                )
+                sent = True
+                print(f"✅ Method 4 SUCCESS!")
+            
+            # Try 5: Look through all attributes for Room object
+            else:
+                print(f"🔍 Searching all attributes for Room object...")
+                sys.stdout.flush()
+                for attr_name in dir(self.transport):
+                    if attr_name.startswith('__'):
+                        continue
+                    try:
+                        attr = getattr(self.transport, attr_name)
+                        # Check if this looks like a LiveKit Room
+                        if hasattr(attr, 'local_participant') and hasattr(attr, 'publish_data'):
+                            print(f"🎯 Found Room-like object: {attr_name}")
+                            sys.stdout.flush()
+                            await attr.local_participant.publish_data(
+                                data.encode('utf-8'),
+                                reliable=True
+                            )
+                            sent = True
+                            print(f"✅ SUCCESS using {attr_name}!")
+                            break
+                    except:
+                        continue
+            
+            if sent:
+                print(f"✅ User transcript sent to frontend!")
+                sys.stdout.flush()
+                logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
+            else:
+                print(f"❌ Could not find way to send data - no room object found")
+                print(f"   Available attrs with 'room': {[a for a in dir(self.transport) if 'room' in a.lower()]}")
+                sys.stdout.flush()
+                
         except AttributeError as attr_err:
             print(f"❌ ATTRIBUTE ERROR: {attr_err}")
             print(f"   Transport type: {type(self.transport)}")
-            print(f"   Has _room? {hasattr(self.transport, '_room')}")
-            if hasattr(self.transport, '_room'):
-                print(f"   Room type: {type(self.transport._room)}")
-                print(f"   Room has local_participant? {hasattr(self.transport._room, 'local_participant')}")
             sys.stdout.flush()
             logger.error(f"AttributeError sending user transcript: {attr_err}", exc_info=True)
         except Exception as e:
@@ -241,15 +331,48 @@ class TranscriptionReporter:
             print(f"📦 Data prepared: {len(data)} bytes")
             sys.stdout.flush()
             
-            # Send via LiveKit's underlying room object
-            await self.transport._room.local_participant.publish_data(
-                data.encode('utf-8'),
-                reliable=True
-            )
+            # Try multiple possible paths (same as user transcript)
+            sent = False
             
-            print(f"✅ SUCCESS! Assistant transcript sent to frontend")
-            sys.stdout.flush()
-            logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
+            # Try each method
+            for attr_name in ['_room', 'room', '_lk_room', 'lk_room']:
+                if hasattr(self.transport, attr_name):
+                    room = getattr(self.transport, attr_name)
+                    if room and hasattr(room, 'local_participant'):
+                        await room.local_participant.publish_data(
+                            data.encode('utf-8'),
+                            reliable=True
+                        )
+                        sent = True
+                        print(f"✅ SUCCESS using {attr_name}!")
+                        sys.stdout.flush()
+                        break
+            
+            # Fallback: search all attributes
+            if not sent:
+                for attr_name in dir(self.transport):
+                    if attr_name.startswith('__'):
+                        continue
+                    try:
+                        attr = getattr(self.transport, attr_name)
+                        if hasattr(attr, 'local_participant'):
+                            await attr.local_participant.publish_data(
+                                data.encode('utf-8'),
+                                reliable=True
+                            )
+                            sent = True
+                            print(f"✅ SUCCESS using {attr_name}!")
+                            sys.stdout.flush()
+                            break
+                    except:
+                        continue
+            
+            if sent:
+                logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
+            else:
+                print(f"❌ Could not send assistant transcript - no room object found")
+                sys.stdout.flush()
+                
         except Exception as e:
             print(f"❌ FAILED TO SEND ASSISTANT TRANSCRIPT: {e}")
             sys.stdout.flush()
@@ -523,7 +646,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info(f"context_aggregator_configured aggregation_timeout={AGGREGATION_TIMEOUT} interruption_timeout={BOT_INTERRUPTION_TIMEOUT}")
 
         # Create transcription reporter for frontend latency tracking
-        transcription_reporter = TranscriptionReporter(transport)
+        # IMPORTANT: Create this AFTER transport is connected to the room
+        # We'll create it in the participant_joined handler instead
+        transcription_reporter = None
         
         # Create transcript processor and storage
         transcript_processor = TranscriptProcessor()
@@ -534,6 +659,8 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         @transcript_processor.event_handler("on_transcript_update")
         async def on_transcript_update(processor, transcript):
             """Capture transcript updates from Pipecat"""
+            nonlocal transcription_reporter
+            
             print("\n" + "=" * 80)
             print("🔔 TRANSCRIPT EVENT HANDLER FIRED!")
             print("=" * 80)
@@ -556,16 +683,21 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     transcript_storage.add_message(role, content, timestamp)
                     logger.debug(f"Transcript captured: {role[:10]}: {content[:50]}...")
                     
-                    # Send user transcripts to frontend for latency tracking
-                    if role == 'user' and content:
-                        print(f"🚀 Calling report_user_transcript...")
+                    # Send transcripts to frontend if reporter is initialized
+                    if transcription_reporter:
+                        # Send user transcripts to frontend for latency tracking
+                        if role == 'user' and content:
+                            print(f"🚀 Calling report_user_transcript...")
+                            sys.stdout.flush()
+                            await transcription_reporter.report_user_transcript(content)
+                        # Optionally send assistant transcripts too
+                        elif role == 'assistant' and content:
+                            print(f"🤖 Calling report_assistant_transcript...")
+                            sys.stdout.flush()
+                            await transcription_reporter.report_assistant_transcript(content)
+                    else:
+                        print(f"⚠️ TranscriptionReporter not initialized yet")
                         sys.stdout.flush()
-                        await transcription_reporter.report_user_transcript(content)
-                    # Optionally send assistant transcripts too
-                    elif role == 'assistant' and content:
-                        print(f"🤖 Calling report_assistant_transcript...")
-                        sys.stdout.flush()
-                        await transcription_reporter.report_assistant_transcript(content)
             else:
                 print("⚠️ Transcript has no 'messages' attribute")
                 print(f"   Transcript type: {type(transcript)}")
@@ -669,10 +801,16 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # participant joins.
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant_id):
+            nonlocal transcription_reporter
             event_start = time.perf_counter() if ENABLE_TIMING else None
 
             try:
                 logger.info(f"participant_joined participant_id={participant_id}")
+                
+                # NOW create transcription reporter after transport is connected
+                print("\n🔧 Creating TranscriptionReporter after connection...")
+                sys.stdout.flush()
+                transcription_reporter = TranscriptionReporter(transport)
 
                 # Track conversation start time (for billing)
                 redis_start = time.perf_counter() if ENABLE_TIMING else None
@@ -824,13 +962,11 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     success = await Database.save_transcript(room_name, transcript_data)
 
                     if success:
-                        # FIXED: Remove invalid keyword argument
                         logger.info(f"✅ Transcripts saved successfully for session {room_name} transcript_count={len(transcript_data)}")
                     else:
                         logger.error(f"❌ Failed to save transcripts for session {room_name}")
 
                 except Exception as e:
-                    # FIXED: Remove invalid keyword argument
                     logger.error(f"Exception saving transcripts session_id={room_name} error={str(e)}", exc_info=True)
             else:
                 logger.info(f"No transcripts to save for session {room_name}")
@@ -840,7 +976,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             await Database.close()
             logger.info("Database connection closed")
         except Exception as e:
-            logger.error(f"Error closing database connection: {e}", exc_info=True)
+            logger.error(f"Error closing database connection error={str(e)}", exc_info=True)
 
         # Clean up resources
         logger.info("cleanup_started")
@@ -876,6 +1012,29 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
 
 if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='LiveKit Voice Assistant with Inworld TTS')
+    parser.add_argument('--voice-id', type=str, default='Ashley',
+                        help='Inworld TTS voice ID (default: Ashley)')
+    parser.add_argument('--opening-line', type=str, default=None,
+                        help='Custom opening line to speak when user joins')
+    parser.add_argument('--system-prompt', type=str, default=None,
+                        help='Custom LLM system prompt (optional)')
+    parser.add_argument('--room', type=str, help='LiveKit room name (passed to configure)')
+
+    args = parser.parse_args()
+
+    try:
+        asyncio.run(main(
+            voice_id=args.voice_id,
+            opening_line=args.opening_line,
+            system_prompt=args.system_prompt
+        ))
+    except KeyboardInterrupt:
+        logger.info("keyboard_interrupt_shutdown")
+    except Exception as e:
+        logger.error(f"unhandled_exception error={str(e)}", exc_info=True)
+        sys.exit(1)
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='LiveKit Voice Assistant with Inworld TTS')
     parser.add_argument('--voice-id', type=str, default='Ashley',
