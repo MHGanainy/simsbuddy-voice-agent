@@ -173,7 +173,7 @@ class TranscriptionReporter:
             })
             
             # Send via LiveKit data channel
-            await self.transport.send_message(data)
+            await self.transport.send_data(data.encode('utf-8'))
             logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send user transcript to frontend: {e}", exc_info=True)
@@ -190,8 +190,7 @@ class TranscriptionReporter:
                 "text": text,
                 "timestamp": timestamp
             })
-            
-            await self.transport.send_message(data)
+            await self.transport.send_data(data.encode('utf-8'))
             logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send assistant transcript to frontend: {e}", exc_info=True)
