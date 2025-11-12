@@ -218,93 +218,15 @@ class TranscriptionReporter:
             })
             
             print(f"📦 Data prepared: {len(data)} bytes")
-            print(f"🔍 Searching for correct way to send data...")
+            print(f"🚀 Calling transport.send_message()...")
             sys.stdout.flush()
             
-            # Try multiple possible paths
-            sent = False
+            # Use Pipecat's send_message method!
+            await self.transport.send_message(data)
             
-            # Try 1: _room
-            if hasattr(self.transport, '_room') and self.transport._room:
-                print(f"🚀 Method 1: Using _room...")
-                sys.stdout.flush()
-                await self.transport._room.local_participant.publish_data(
-                    data.encode('utf-8'),
-                    reliable=True
-                )
-                sent = True
-                print(f"✅ Method 1 SUCCESS!")
-            
-            # Try 2: room (public)
-            elif hasattr(self.transport, 'room') and self.transport.room:
-                print(f"🚀 Method 2: Using room...")
-                sys.stdout.flush()
-                await self.transport.room.local_participant.publish_data(
-                    data.encode('utf-8'),
-                    reliable=True
-                )
-                sent = True
-                print(f"✅ Method 2 SUCCESS!")
-            
-            # Try 3: _lk_room
-            elif hasattr(self.transport, '_lk_room') and self.transport._lk_room:
-                print(f"🚀 Method 3: Using _lk_room...")
-                sys.stdout.flush()
-                await self.transport._lk_room.local_participant.publish_data(
-                    data.encode('utf-8'),
-                    reliable=True
-                )
-                sent = True
-                print(f"✅ Method 3 SUCCESS!")
-            
-            # Try 4: lk_room
-            elif hasattr(self.transport, 'lk_room') and self.transport.lk_room:
-                print(f"🚀 Method 4: Using lk_room...")
-                sys.stdout.flush()
-                await self.transport.lk_room.local_participant.publish_data(
-                    data.encode('utf-8'),
-                    reliable=True
-                )
-                sent = True
-                print(f"✅ Method 4 SUCCESS!")
-            
-            # Try 5: Look through all attributes for Room object
-            else:
-                print(f"🔍 Searching all attributes for Room object...")
-                sys.stdout.flush()
-                for attr_name in dir(self.transport):
-                    if attr_name.startswith('__'):
-                        continue
-                    try:
-                        attr = getattr(self.transport, attr_name)
-                        # Check if this looks like a LiveKit Room
-                        if hasattr(attr, 'local_participant') and hasattr(attr, 'publish_data'):
-                            print(f"🎯 Found Room-like object: {attr_name}")
-                            sys.stdout.flush()
-                            await attr.local_participant.publish_data(
-                                data.encode('utf-8'),
-                                reliable=True
-                            )
-                            sent = True
-                            print(f"✅ SUCCESS using {attr_name}!")
-                            break
-                    except:
-                        continue
-            
-            if sent:
-                print(f"✅ User transcript sent to frontend!")
-                sys.stdout.flush()
-                logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
-            else:
-                print(f"❌ Could not find way to send data - no room object found")
-                print(f"   Available attrs with 'room': {[a for a in dir(self.transport) if 'room' in a.lower()]}")
-                sys.stdout.flush()
-                
-        except AttributeError as attr_err:
-            print(f"❌ ATTRIBUTE ERROR: {attr_err}")
-            print(f"   Transport type: {type(self.transport)}")
+            print(f"✅ SUCCESS! User transcript sent to frontend")
             sys.stdout.flush()
-            logger.error(f"AttributeError sending user transcript: {attr_err}", exc_info=True)
+            logger.debug(f"📤 Sent user transcript to frontend: {text[:50]}...")
         except Exception as e:
             print(f"❌ FAILED TO SEND USER TRANSCRIPT: {e}")
             print(f"   Exception type: {type(e).__name__}")
@@ -331,48 +253,12 @@ class TranscriptionReporter:
             print(f"📦 Data prepared: {len(data)} bytes")
             sys.stdout.flush()
             
-            # Try multiple possible paths (same as user transcript)
-            sent = False
+            # Use Pipecat's send_message method!
+            await self.transport.send_message(data)
             
-            # Try each method
-            for attr_name in ['_room', 'room', '_lk_room', 'lk_room']:
-                if hasattr(self.transport, attr_name):
-                    room = getattr(self.transport, attr_name)
-                    if room and hasattr(room, 'local_participant'):
-                        await room.local_participant.publish_data(
-                            data.encode('utf-8'),
-                            reliable=True
-                        )
-                        sent = True
-                        print(f"✅ SUCCESS using {attr_name}!")
-                        sys.stdout.flush()
-                        break
-            
-            # Fallback: search all attributes
-            if not sent:
-                for attr_name in dir(self.transport):
-                    if attr_name.startswith('__'):
-                        continue
-                    try:
-                        attr = getattr(self.transport, attr_name)
-                        if hasattr(attr, 'local_participant'):
-                            await attr.local_participant.publish_data(
-                                data.encode('utf-8'),
-                                reliable=True
-                            )
-                            sent = True
-                            print(f"✅ SUCCESS using {attr_name}!")
-                            sys.stdout.flush()
-                            break
-                    except:
-                        continue
-            
-            if sent:
-                logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
-            else:
-                print(f"❌ Could not send assistant transcript - no room object found")
-                sys.stdout.flush()
-                
+            print(f"✅ SUCCESS! Assistant transcript sent to frontend")
+            sys.stdout.flush()
+            logger.debug(f"📤 Sent assistant transcript to frontend: {text[:50]}...")
         except Exception as e:
             print(f"❌ FAILED TO SEND ASSISTANT TRANSCRIPT: {e}")
             sys.stdout.flush()
