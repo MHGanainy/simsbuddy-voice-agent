@@ -194,11 +194,14 @@ class TranscriptionReporter:
             })
             
             print(f"📦 Data prepared: {len(data)} bytes")
-            print(f"🚀 Calling transport.send_data()...")
+            print(f"🚀 Accessing transport._room.local_participant...")
             sys.stdout.flush()
             
-            # Send via LiveKit data channel
-            await self.transport.send_data(data.encode('utf-8'))
+            # Send via LiveKit's underlying room object
+            await self.transport._room.local_participant.publish_data(
+                data.encode('utf-8'),
+                reliable=True
+            )
             
             print(f"✅ SUCCESS! User transcript sent to frontend")
             sys.stdout.flush()
@@ -206,7 +209,10 @@ class TranscriptionReporter:
         except AttributeError as attr_err:
             print(f"❌ ATTRIBUTE ERROR: {attr_err}")
             print(f"   Transport type: {type(self.transport)}")
-            print(f"   Available methods: {[m for m in dir(self.transport) if not m.startswith('_')][:10]}")
+            print(f"   Has _room? {hasattr(self.transport, '_room')}")
+            if hasattr(self.transport, '_room'):
+                print(f"   Room type: {type(self.transport._room)}")
+                print(f"   Room has local_participant? {hasattr(self.transport._room, 'local_participant')}")
             sys.stdout.flush()
             logger.error(f"AttributeError sending user transcript: {attr_err}", exc_info=True)
         except Exception as e:
@@ -235,7 +241,11 @@ class TranscriptionReporter:
             print(f"📦 Data prepared: {len(data)} bytes")
             sys.stdout.flush()
             
-            await self.transport.send_data(data.encode('utf-8'))
+            # Send via LiveKit's underlying room object
+            await self.transport._room.local_participant.publish_data(
+                data.encode('utf-8'),
+                reliable=True
+            )
             
             print(f"✅ SUCCESS! Assistant transcript sent to frontend")
             sys.stdout.flush()
@@ -814,15 +824,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     success = await Database.save_transcript(room_name, transcript_data)
 
                     if success:
-                        logger.info(f"✅ Transcripts saved successfully for session {room_name}",
-                                  transcript_count=len(transcript_data))
+                        # FIXED: Remove invalid keyword argument
+                        logger.info(f"✅ Transcripts saved successfully for session {room_name} transcript_count={len(transcript_data)}")
                     else:
                         logger.error(f"❌ Failed to save transcripts for session {room_name}")
 
                 except Exception as e:
-                    logger.error(f"Exception saving transcripts: {e}",
-                               session_id=room_name,
-                               exc_info=True)
+                    # FIXED: Remove invalid keyword argument
+                    logger.error(f"Exception saving transcripts session_id={room_name} error={str(e)}", exc_info=True)
             else:
                 logger.info(f"No transcripts to save for session {room_name}")
 
