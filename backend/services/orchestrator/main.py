@@ -13,6 +13,8 @@ import hashlib
 import hmac
 import json
 import asyncio
+import subprocess
+import threading
 from typing import Optional, Dict, Any
 from datetime import timedelta
 
@@ -56,6 +58,9 @@ except Exception as e:
 # Celery app (for task revocation)
 celery_app = Celery('voice_agent_tasks')
 celery_app.config_from_object('backend.services.orchestrator.celeryconfig')
+
+# Global tracking for spawned agent processes (for log readers)
+active_agent_processes: Dict[str, subprocess.Popen] = {}
 
 # FastAPI app
 app = FastAPI(
@@ -219,6 +224,31 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
     return cleanup_result
 
 
+def read_agent_logs_sync(session_id: str, process: subprocess.Popen):
+    """
+    Read agent stdout in background thread to prevent pipe blocking.
+
+    This is critical to prevent the agent from blocking when the stdout pipe
+    buffer fills up (~64KB). Without this, the agent will freeze after the
+    first conversation turn when logs exceed the buffer size.
+
+    Args:
+        session_id: Session ID for log prefixing
+        process: The subprocess.Popen object with stdout pipe
+    """
+    try:
+        for line in iter(process.stdout.readline, ''):
+            if not line:
+                break
+            logger.info(f"agent_log session_id={session_id} {line.rstrip()}")
+    except Exception as e:
+        logger.error(f"log_reader_error session_id={session_id} error={str(e)}")
+    finally:
+        logger.info(f"log_reader_stopped session_id={session_id}")
+        # Remove from tracking when log reader exits
+        active_agent_processes.pop(session_id, None)
+
+
 async def cleanup_session(session_id: str) -> Dict[str, Any]:
     """
     Clean up session resources (async to avoid blocking API)
@@ -370,6 +400,11 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                 error_msg = f"Failed to kill process {pid_str}: {e}"
                 cleanup_details["errors"].append(error_msg)
                 logger.error(f"cleanup_kill_process_failed session_id={session_id} pid={pid_str} error={str(e)}", exc_info=True)
+
+        # Remove process from active tracking (log reader will also clean this up)
+        if session_id in active_agent_processes:
+            active_agent_processes.pop(session_id, None)
+            logger.info(f"cleanup_removed_from_tracking session_id={session_id}")
 
         # 3. Clean up Redis keys
         try:
@@ -608,6 +643,169 @@ async def start_session(request: SessionStartRequest):
             except:
                 pass
         raise HTTPException(status_code=500, detail=f"Failed to start session: {str(e)}")
+
+@app.post("/orchestrator/session/start-direct", response_model=SessionStartResponse)
+async def start_session_direct(request: SessionStartRequest):
+    """
+    Start a voice assistant session with direct agent spawning (no Celery).
+
+    Similar to /orchestrator/session/start but spawns the agent process directly
+    instead of queuing a Celery task. Useful for testing and faster startup.
+
+    Flow:
+    1. Generate unique session ID
+    2. Generate LiveKit access token
+    3. Store session config in Redis
+    4. Spawn voice agent subprocess directly
+    5. Return token and session info
+
+    Args:
+        request: SessionStartRequest with userName, voiceId, openingLine
+
+    Returns:
+        SessionStartResponse with sessionId, token, serverUrl
+    """
+    session_id = None
+    process = None
+
+    try:
+        # Generate session ID
+        if request.correlationToken:
+            session_id = request.correlationToken
+            logger.info(f"session_using_correlation_token correlation_token={request.correlationToken}")
+        else:
+            session_id = generate_session_id()
+
+        # Validate voice ID
+        requested_voice = request.voiceId or "Ashley"
+        if requested_voice not in VALID_VOICES:
+            logger.warning(f"invalid_voice_requested requested_voice={requested_voice} fallback='Ashley'")
+            voice_id = "Ashley"
+        else:
+            voice_id = requested_voice
+
+        logger.info(f"session_start_direct_requested session_id={session_id} user_name={request.userName} voice_id={voice_id}")
+
+        # Generate LiveKit token
+        try:
+            token = generate_livekit_token(session_id, request.userName)
+        except Exception as e:
+            logger.error(f"session_token_generation_failed error={str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"LiveKit token generation failed: {str(e)}"
+            )
+
+        # Store session config in Redis
+        try:
+            config_key = f"session:{session_id}:config"
+            config_data = {
+                'voiceId': voice_id,
+                'userName': request.userName,
+                'updatedAt': str(int(time.time()))
+            }
+
+            if request.openingLine:
+                config_data['openingLine'] = request.openingLine
+            if request.systemPrompt:
+                config_data['systemPrompt'] = request.systemPrompt
+
+            redis_client.hset(config_key, mapping=config_data)
+            redis_client.expire(config_key, 14400)
+            logger.info(f"session_config_stored session_id={session_id} voice_id={voice_id}")
+        except Exception as e:
+            logger.warning(f"session_config_store_failed session_id={session_id} error={str(e)}")
+
+        # Spawn voice agent directly
+        try:
+            script_path = os.getenv('PYTHON_SCRIPT_PATH', '/app/backend/agent/voice_assistant.py')
+
+            # Build command
+            cmd = ['python3', script_path, '--room', session_id, '--voice-id', voice_id]
+            if request.openingLine:
+                cmd.extend(['--opening-line', request.openingLine])
+            if request.systemPrompt:
+                cmd.extend(['--system-prompt', request.systemPrompt])
+
+            logger.info(f"spawning_agent_direct session_id={session_id} cmd={' '.join(cmd[:4])}")
+
+            # Build environment with TEST_MODE and PYTHONUNBUFFERED
+            # TEST_MODE prevents production heartbeat HTTP calls that could block
+            # PYTHONUNBUFFERED ensures logs are written immediately to prevent buffering issues
+            env = os.environ.copy()
+            env['TEST_MODE'] = 'true'
+            env['PYTHONUNBUFFERED'] = '1'
+
+            # Spawn process with process group
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+                preexec_fn=os.setsid  # Create new process group
+            )
+
+            pid = process.pid
+            pgid = os.getpgid(pid)
+
+            # Store PID and PGID in Redis
+            redis_client.set(f'agent:{session_id}:pid', pid, ex=14400)
+            redis_client.hset(f'session:{session_id}', 'agentPid', str(pid))
+            redis_client.hset(f'session:{session_id}', 'agentPgid', str(pgid))
+            redis_client.hset(f'session:{session_id}', 'status', 'starting')
+            redis_client.hset(f'session:{session_id}', 'startTime', str(int(time.time())))
+            redis_client.hset(f'session:{session_id}', 'spawnMode', 'direct')
+
+            logger.info(f"agent_spawned_direct session_id={session_id} pid={pid} pgid={pgid}")
+
+            # Store process and start log reader thread to prevent stdout pipe blocking
+            # This is CRITICAL: without consuming stdout, the pipe buffer fills (~64KB)
+            # and the agent blocks on log writes, freezing after first conversation turn
+            active_agent_processes[session_id] = process
+            thread = threading.Thread(
+                target=read_agent_logs_sync,
+                args=(session_id, process),
+                daemon=True,
+                name=f"log-reader-{session_id}"
+            )
+            thread.start()
+            logger.info(f"log_reader_started session_id={session_id} thread={thread.name}")
+
+        except Exception as e:
+            logger.error(f"agent_spawn_failed session_id={session_id} error={str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to spawn voice agent: {str(e)}"
+            )
+
+        logger.info(f"session_started_direct session_id={session_id} voice_id={voice_id}")
+
+        return SessionStartResponse(
+            success=True,
+            sessionId=session_id,
+            token=token,
+            serverUrl=LIVEKIT_URL,
+            roomName=session_id,
+            message="Session created with direct agent spawn.",
+            initialCreditDeducted=None,  # No billing in direct mode
+            creditsRemaining=None,
+            minuteBilled=None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"session_start_direct_failed session_id={session_id} error={str(e)}", exc_info=True)
+        # Cleanup on failure
+        if session_id:
+            try:
+                await cleanup_session(session_id)
+            except:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to start session: {str(e)}")
+
 
 @app.post("/orchestrator/session/end", response_model=SessionEndResponse)
 async def end_session(request: SessionEndRequest):
