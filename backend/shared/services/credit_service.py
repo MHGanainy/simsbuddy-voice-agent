@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from enum import Enum
 import asyncpg
 from asyncpg.pool import Pool
-import redis
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class CreditService:
     """
 
     _pool: Optional[Pool] = None
-    _redis_client: Optional[redis.Redis] = None
+    _redis_client: Optional[Redis] = None
 
     @classmethod
     async def get_pool(cls) -> Pool:
@@ -53,13 +53,13 @@ class CreditService:
         return cls._pool
 
     @classmethod
-    def get_redis_client(cls) -> redis.Redis:
-        """Get or create Redis client"""
+    async def get_redis_client(cls) -> Redis:
+        """Get or create async Redis client"""
         if cls._redis_client is None:
             redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            cls._redis_client = redis.from_url(redis_url, decode_responses=True)
+            cls._redis_client = await Redis.from_url(redis_url, decode_responses=True)
             try:
-                cls._redis_client.ping()
+                await cls._redis_client.ping()
                 logger.info("Credit service Redis connection established")
             except Exception as e:
                 logger.error(f"Failed to connect to Redis: {e}")
@@ -160,11 +160,11 @@ class CreditService:
                 - student_id: Student ID (if found)
                 - balance_after: Remaining balance (if deducted)
         """
-        redis_client = cls.get_redis_client()
+        redis_client = await cls.get_redis_client()
         idempotency_key = f"credit:billed:{session_id}:{minute_number}"
 
         # Check idempotency - already billed?
-        if redis_client.exists(idempotency_key):
+        if await redis_client.exists(idempotency_key):
             logger.info(f"Minute {minute_number} for session {session_id} already billed (idempotent)")
             return {
                 "result": CreditDeductionResult.ALREADY_BILLED,
@@ -283,7 +283,7 @@ class CreditService:
                     )
 
             # Transaction succeeded - set idempotency key with 7-day TTL
-            redis_client.setex(idempotency_key, 7 * 24 * 60 * 60, "1")
+            await redis_client.setex(idempotency_key, 7 * 24 * 60 * 60, "1")
 
             return {
                 "result": CreditDeductionResult.SUCCESS,
@@ -426,7 +426,7 @@ class CreditService:
 
         if cls._redis_client:
             try:
-                cls._redis_client.close()
+                await cls._redis_client.close()
                 cls._redis_client = None
                 logger.info("Credit service Redis connection closed")
             except Exception as e:
