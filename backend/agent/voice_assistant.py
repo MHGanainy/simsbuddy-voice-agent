@@ -18,7 +18,8 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 import aiohttp
-import redis
+from redis.asyncio import Redis
+from typing import Optional
 
 # Import structured logging
 from backend.shared.logging_config import setup_logging
@@ -52,6 +53,129 @@ load_dotenv(override=True)
 
 # Setup logging
 logger = setup_logging(service_name='voice-agent')
+
+
+class RedisTracker:
+    """
+    Optional Redis tracker for conversation metrics.
+
+    Provides graceful degradation - agent continues working even if Redis fails.
+    All operations are non-blocking with timeout protection (2 seconds).
+
+    Design principles:
+    - Non-critical operations: Redis failures don't crash the agent
+    - Connection pooling: Reuse connections for efficiency
+    - Comprehensive logging: Track both successes and failures
+    - Timeout protection: Never hang indefinitely
+    """
+
+    def __init__(self, redis_pool: Optional[Redis] = None):
+        """
+        Initialize tracker with optional Redis connection pool.
+
+        Args:
+            redis_pool: Async Redis connection pool. If None, all operations
+                       will be skipped gracefully.
+        """
+        self.pool = redis_pool
+        if redis_pool:
+            logger.info("redis_tracker_initialized")
+        else:
+            logger.info("redis_tracker_disabled")
+
+    async def track_conversation_start(self, session_id: str) -> bool:
+        """
+        Track conversation start time (non-critical operation).
+
+        Stores the Unix timestamp when the first participant joins.
+        Used later to calculate conversation duration.
+
+        Args:
+            session_id: Session/room identifier
+
+        Returns:
+            True if tracking succeeded, False otherwise (agent continues either way)
+        """
+        if not self.pool:
+            logger.debug(f"redis_pool_unavailable session={session_id[:20]}...")
+            return False
+
+        try:
+            conversation_start_time = int(time.time())
+            await self.pool.hset(
+                f'session:{session_id}',
+                'conversationStartTime',
+                conversation_start_time
+            )
+            logger.info(f"conversation_start_tracked session={session_id[:20]}... start_time={conversation_start_time}")
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"redis_timeout_start session={session_id[:20]}... timeout_after=2s")
+        except ConnectionError as e:
+            logger.warning(f"redis_connection_error_start session={session_id[:20]}... error={e}")
+        except Exception as e:
+            logger.warning(f"redis_error_start session={session_id[:20]}... error={e}")
+        return False
+
+    async def track_conversation_end(self, session_id: str) -> bool:
+        """
+        Track conversation end, calculate duration, and update status (non-critical).
+
+        Retrieves the start time, calculates duration in seconds and minutes,
+        updates the status to 'completed', and records the last active time.
+
+        This combines the logic from both cleanup Redis operations:
+        - Duration tracking (lines 536-549 in original)
+        - Status update (lines 590-599 in original)
+
+        Args:
+            session_id: Session/room identifier
+
+        Returns:
+            True if tracking succeeded, False otherwise (agent continues either way)
+        """
+        if not self.pool:
+            logger.debug(f"redis_pool_unavailable session={session_id[:20]}...")
+            return False
+
+        try:
+            # Retrieve conversation start time
+            start_time = await self.pool.hget(
+                f'session:{session_id}',
+                'conversationStartTime'
+            )
+
+            if start_time:
+                # Calculate duration
+                duration = int(time.time()) - int(start_time)
+                duration_minutes = math.ceil(duration / 60)
+
+                # Update all fields atomically in a single HSET
+                # This combines duration tracking and status update
+                await self.pool.hset(
+                    f'session:{session_id}',
+                    mapping={
+                        'conversationDuration': duration,
+                        'conversationDurationMinutes': duration_minutes,
+                        'status': 'completed',
+                        'lastActive': int(time.time())
+                    }
+                )
+                logger.info(
+                    f"conversation_end_tracked session={session_id[:20]}... "
+                    f"duration={duration}s duration_minutes={duration_minutes}"
+                )
+                return True
+            else:
+                logger.warning(f"no_start_time_found session={session_id[:20]}...")
+        except asyncio.TimeoutError:
+            logger.warning(f"redis_timeout_end session={session_id[:20]}... timeout_after=2s")
+        except ConnectionError as e:
+            logger.warning(f"redis_connection_error_end session={session_id[:20]}... error={e}")
+        except Exception as e:
+            logger.warning(f"redis_error_end session={session_id[:20]}... error={e}")
+        return False
+
 
 # ==================== AGENT CONFIGURATION ====================
 
@@ -292,6 +416,8 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     """Main function to run the voice assistant bot."""
     session = None
     transport = None
+    redis_pool = None
+    redis_tracker = None
 
     try:
         logger.info(f"voice_assistant_starting voice_id={voice_id}")
@@ -299,6 +425,35 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # Configure LiveKit connection
         (url, token, room_name) = await configure()
         logger.info(f"livekit_configured room_name={room_name}")
+
+        # Initialize Redis connection pool (optional, non-critical)
+        # Agent will continue working even if Redis is unavailable
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+        try:
+            redis_pool = await Redis.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                max_connections=10,              # Pool up to 10 connections
+                socket_connect_timeout=2,        # 2 second connection timeout
+                socket_timeout=2,                # 2 second operation timeout
+                socket_keepalive=True,           # Keep connections alive
+                health_check_interval=30         # Check connection health every 30s
+            )
+            logger.info("redis_pool_created max_connections=10 timeout=2s")
+            redis_tracker = RedisTracker(redis_pool)
+        except asyncio.TimeoutError:
+            logger.warning(f"redis_pool_creation_timeout url={redis_url} timeout=2s")
+            logger.info("continuing_without_redis_tracking")
+            redis_tracker = RedisTracker(None)
+        except ConnectionError as e:
+            logger.warning(f"redis_pool_connection_failed url={redis_url} error={e}")
+            logger.info("continuing_without_redis_tracking")
+            redis_tracker = RedisTracker(None)
+        except Exception as e:
+            logger.warning(f"redis_pool_creation_failed url={redis_url} error={e}")
+            logger.info("continuing_without_redis_tracking")
+            redis_tracker = RedisTracker(None)
 
         # Create transport
         transport = LiveKitTransport(
@@ -470,15 +625,8 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             # Create transcription reporter after transport is connected
             transcription_reporter = TranscriptionReporter(transport)
 
-            # Track conversation start time
-            conversation_start_time = int(time.time())
-            try:
-                redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-                redis_client = redis.from_url(redis_url)
-                redis_client.hset(f'session:{room_name}', 'conversationStartTime', conversation_start_time)
-                logger.info(f"conversation_start_time_tracked start_time={conversation_start_time}")
-            except Exception as redis_error:
-                logger.error(f"redis_tracking_failed: {redis_error}")
+            # Track conversation start time (non-blocking, non-critical)
+            await redis_tracker.track_conversation_start(room_name)
 
             # Pipeline stabilization delay
             await asyncio.sleep(PARTICIPANT_GREETING_DELAY)
@@ -532,21 +680,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             except Exception:
                 pass
 
-        # Track conversation end time
-        try:
-            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-            redis_client = redis.from_url(redis_url)
-            start_time = redis_client.hget(f'session:{room_name}', 'conversationStartTime')
-            if start_time:
-                duration = int(time.time()) - int(start_time)
-                duration_minutes = math.ceil(duration / 60)
-                redis_client.hset(f'session:{room_name}', mapping={
-                    'conversationDuration': duration,
-                    'conversationDurationMinutes': duration_minutes
-                })
-                logger.info(f"conversation_duration_tracked duration_seconds={duration}")
-        except Exception as e:
-            logger.error(f"duration_tracking_failed: {e}")
+        # Track conversation end (combines duration tracking and status update)
+        if 'redis_tracker' in locals() and redis_tracker:
+            await redis_tracker.track_conversation_end(room_name)
 
         # Save transcripts to database
         if 'transcript_storage' in locals():
@@ -586,17 +722,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             except Exception as e:
                 logger.error(f"heartbeat_session_close_error: {e}")
 
-        # Mark session as completed
-        try:
-            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-            redis_client = redis.from_url(redis_url)
-            redis_client.hset(f'session:{room_name}', mapping={
-                'status': 'completed',
-                'lastActive': int(time.time())
-            })
-            logger.info("session_marked_completed")
-        except Exception as e:
-            logger.error(f"status_update_failed: {e}")
+        # Close Redis pool
+        if 'redis_pool' in locals() and redis_pool:
+            try:
+                await redis_pool.close()
+                await redis_pool.connection_pool.disconnect()
+                logger.info("redis_pool_closed")
+            except Exception as e:
+                logger.error(f"redis_pool_cleanup_error: {e}")
 
         logger.info("shutdown_complete")
 
