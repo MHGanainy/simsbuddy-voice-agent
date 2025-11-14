@@ -8,6 +8,9 @@ from asyncpg.pool import Pool
 
 logger = logging.getLogger(__name__)
 
+# TEST_MODE configuration
+TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
+
 
 class Database:
     """Database service for handling transcript storage using asyncpg"""
@@ -38,7 +41,31 @@ class Database:
 
     @classmethod
     async def save_transcript(cls, correlation_token: str, transcript_data: List[Dict]) -> bool:
-        """Save transcript to simulation_attempts table"""
+        """
+        Save transcript to simulation_attempts table
+
+        In TEST_MODE: Logs transcript data but skips database UPDATE.
+        """
+        if TEST_MODE:
+            logger.info(
+                f"TEST MODE: Skipping transcript save for {correlation_token}"
+            )
+            logger.info(
+                f"TEST MODE: Transcript contains {len(transcript_data)} messages"
+            )
+            logger.debug(
+                f"TEST MODE: Would execute UPDATE simulation_attempts SET transcript = ... "
+                f"WHERE correlationToken = '{correlation_token}'"
+            )
+
+            # Log first and last messages for verification
+            if transcript_data:
+                logger.info(f"TEST MODE: First message: {transcript_data[0]}")
+                if len(transcript_data) > 1:
+                    logger.info(f"TEST MODE: Last message: {transcript_data[-1]}")
+
+            return True
+
         try:
             pool = await cls.get_pool()
 

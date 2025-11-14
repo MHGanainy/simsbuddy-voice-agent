@@ -8,6 +8,11 @@ import redis
 
 logger = logging.getLogger(__name__)
 
+# TEST_MODE configuration
+TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
+MOCK_STUDENT_ID = os.getenv('MOCK_STUDENT_ID', 'test_student_123')
+MOCK_CREDIT_BALANCE = int(os.getenv('MOCK_CREDIT_BALANCE', '999'))
+
 
 class CreditDeductionResult(Enum):
     """Result of credit deduction operation"""
@@ -72,12 +77,18 @@ class CreditService:
         """
         Get student_id from SimulationAttempt using correlation_token.
 
+        In TEST_MODE: Returns MOCK_STUDENT_ID without database query.
+
         Args:
             session_id: The session ID (correlation_token)
 
         Returns:
             Student ID if found, None otherwise
         """
+        if TEST_MODE:
+            logger.info(f"TEST MODE: Skipping student_id lookup for {session_id}, returning {MOCK_STUDENT_ID}")
+            return MOCK_STUDENT_ID
+
         try:
             pool = await cls.get_pool()
 
@@ -107,6 +118,8 @@ class CreditService:
         """
         Check if student has sufficient credits.
 
+        In TEST_MODE: Always returns True (mock credit check passes).
+
         Args:
             student_id: The student's ID
             required_credits: Number of credits required
@@ -114,6 +127,13 @@ class CreditService:
         Returns:
             True if student has sufficient credits, False otherwise
         """
+        if TEST_MODE:
+            logger.info(
+                f"TEST MODE: Skipping credit check for {student_id}, "
+                f"required={required_credits}, mock_balance={MOCK_CREDIT_BALANCE} (always sufficient)"
+            )
+            return True
+
         try:
             pool = await cls.get_pool()
 
@@ -144,6 +164,9 @@ class CreditService:
         """
         Deduct 1 credit for a specific minute of conversation.
 
+        In TEST_MODE: Executes idempotency check (Redis), logs billing intent,
+        but skips database transaction. Returns mock success response.
+
         Uses Redis idempotency key to prevent double-charging.
         Creates audit trail in CreditTransaction table.
         Updates SimulationAttempt.minutesBilled to reflect total count of minutes billed.
@@ -163,7 +186,7 @@ class CreditService:
         redis_client = cls.get_redis_client()
         idempotency_key = f"credit:billed:{session_id}:{minute_number}"
 
-        # Check idempotency - already billed?
+        # Check idempotency - already billed? (This runs in TEST_MODE too)
         if redis_client.exists(idempotency_key):
             logger.info(f"Minute {minute_number} for session {session_id} already billed (idempotent)")
             return {
@@ -171,6 +194,30 @@ class CreditService:
                 "message": f"Minute {minute_number} already billed",
                 "session_id": session_id,
                 "minute_number": minute_number
+            }
+
+        # TEST_MODE: Skip database operations but maintain idempotency
+        if TEST_MODE:
+            logger.info(
+                f"TEST MODE: Skipping credit deduction for session={session_id}, minute={minute_number}"
+            )
+            logger.info(
+                f"TEST MODE: Would execute transaction: "
+                f"SELECT/UPDATE students, INSERT credit_transactions, UPDATE simulation_attempts"
+            )
+
+            # Set idempotency key (same as production)
+            redis_client.setex(idempotency_key, 7 * 24 * 60 * 60, "1")
+
+            # Return mock success
+            new_balance = MOCK_CREDIT_BALANCE - (minute_number + 1)  # Simulate deduction
+            return {
+                "result": CreditDeductionResult.SUCCESS,
+                "message": f"TEST MODE: Mock deduction for minute {minute_number}",
+                "student_id": MOCK_STUDENT_ID,
+                "session_id": session_id,
+                "minute_number": minute_number,
+                "balance_after": new_balance
             }
 
         # Get student_id
@@ -311,6 +358,9 @@ class CreditService:
         """
         Reconcile billing at session end to ensure all minutes are billed.
 
+        In TEST_MODE: Calls deduct_minute() for each unbilled minute (which returns
+        mock data), maintaining all reconciliation logic.
+
         Bills any missing minutes from last billed minute to total minutes (rounded up).
 
         Args:
@@ -324,6 +374,32 @@ class CreditService:
                 - minutes_billed: Number of minutes billed in this reconciliation
                 - total_billed: Total minutes billed after reconciliation
         """
+        if TEST_MODE:
+            logger.info(
+                f"TEST MODE: Reconciling session {session_id}, total_minutes={total_minutes}"
+            )
+            logger.info(
+                f"TEST MODE: Will call deduct_minute() for minutes 0-{total_minutes-1} "
+                f"(each returns mock data)"
+            )
+
+            # Execute reconciliation logic (calls deduct_minute which is also mocked)
+            minutes_billed = 0
+            for minute in range(total_minutes):
+                result = await cls.deduct_minute(session_id, minute)
+                if result['result'] in [CreditDeductionResult.SUCCESS, CreditDeductionResult.ALREADY_BILLED]:
+                    minutes_billed += 1
+
+            return {
+                "success": True,
+                "message": f"TEST MODE: Mock reconciliation complete",
+                "session_id": session_id,
+                "student_id": MOCK_STUDENT_ID,
+                "minutes_billed": minutes_billed,
+                "total_billed": total_minutes,
+                "failed_minutes": []
+            }
+
         try:
             pool = await cls.get_pool()
 

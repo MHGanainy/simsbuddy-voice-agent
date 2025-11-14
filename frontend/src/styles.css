@@ -138,6 +138,100 @@ button.large {
   font-family: monospace;
 }
 
+/* === SESSION MODE BADGE === */
+.session-mode-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-mode-badge.direct-agent {
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeeba;
+}
+
+.session-mode-badge.direct {
+  background: #d1ecf1;
+  color: #0c5460;
+  border: 1px solid #bee5eb;
+}
+
+.session-mode-badge.orchestrator {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+/* === TEST MODE SELECTOR === */
+.test-mode-selector {
+  background: white;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.test-mode-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: #2c3e50;
+  font-size: 1rem;
+}
+
+.mode-options {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.mode-button {
+  flex: 1;
+  min-width: 200px;
+  padding: 1rem;
+  background: #f8f9fa;
+  border: 2px solid #e9ecef;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mode-button:hover:not(:disabled) {
+  background: #e9ecef;
+  border-color: #3498db;
+}
+
+.mode-button.active {
+  background: #e3f2fd;
+  border-color: #3498db;
+  box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+}
+
+.mode-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-label {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 0.95rem;
+}
+
+.mode-description {
+  font-size: 0.85rem;
+  color: #7f8c8d;
+  line-height: 1.4;
+}
+
 /* === VOICE SETTINGS === */
 .voice-settings {
   background: white;

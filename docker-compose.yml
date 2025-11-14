@@ -66,6 +66,12 @@ services:
       # Since everything runs in the same container, use localhost
       ORCHESTRATOR_URL: http://localhost:8000
 
+      # TEST_MODE configuration (optional)
+      TEST_MODE: ${TEST_MODE:-false}
+      MOCK_REDIS: ${MOCK_REDIS:-false}
+      MOCK_STUDENT_ID: ${MOCK_STUDENT_ID:-test_student_123}
+      MOCK_CREDIT_BALANCE: ${MOCK_CREDIT_BALANCE:-999}
+
     depends_on:
       redis:
         condition: service_healthy
@@ -101,6 +107,55 @@ services:
     networks:
       - voice-agent-network
     restart: unless-stopped
+
+  # Standalone Voice Agent Server (for direct frontend testing)
+  voice-agent-server:
+    build:
+      context: .
+      dockerfile: backend/services/voice-agent-server/Dockerfile
+    container_name: voice-agent-server
+    ports:
+      - "8001:8001"
+    environment:
+      # Server Configuration
+      SERVER_PORT: 8001
+      AGENT_SCRIPT_PATH: /app/backend/agent/voice_assistant.py
+
+      # LiveKit Configuration
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+
+      # AI Service API Keys
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      ASSEMBLY_API_KEY: ${ASSEMBLY_API_KEY}
+      INWORLD_API_KEY: ${INWORLD_API_KEY}
+
+      # Voice Agent Configuration
+      VOICE_ID: ${VOICE_AGENT_VOICE_ID:-Ashley}
+      OPENING_LINE: ${VOICE_AGENT_OPENING_LINE:-Hello! I am ready for testing. How can I help you?}
+      SYSTEM_PROMPT: ${VOICE_AGENT_SYSTEM_PROMPT:-You are a helpful AI voice assistant.}
+
+      # Room Configuration
+      AGENT_ROOM_NAME: ${AGENT_ROOM_NAME:-test-agent-room}
+      AGENT_USER_ID: ${AGENT_USER_ID:-voice-agent}
+
+      # Test Mode (always true for standalone server)
+      TEST_MODE: true
+      MOCK_REDIS: true  # Skip Redis connections in standalone mode
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    networks:
+      - voice-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 volumes:
   redis-data:

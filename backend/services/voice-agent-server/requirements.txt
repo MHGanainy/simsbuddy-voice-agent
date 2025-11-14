@@ -1,0 +1,14 @@
+# FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# LiveKit API (for token generation only)
+livekit-api==0.5.0
+
+# NOTE: livekit SDK version is managed by pipecat-ai[livekit]
+# from backend/agent/requirements.txt. Don't specify livekit here
+# to avoid version conflicts that cause "remote_participants" errors
+
+# Voice agent dependencies (pipecat, groq, assemblyai, inworld)
+# are inherited from backend/agent/requirements.txt

@@ -412,9 +412,30 @@ def cleanup_stale_agents():
                     except Exception as e:
                         logger.warning(f"cleanup_log_file_removal_failed session_id={session_id} log_file={log_file} error={str(e)}")
 
-                # Comprehensive Redis cleanup using SessionStore
-                user_id = session_data.get('userId')
-                session_store.cleanup_session(session_id, user_id)
+                # Clean up Redis keys
+                try:
+                    user_id = session_data.get('userId')
+                    keys_to_delete = [
+                        f"session:{session_id}",
+                        f"session:{session_id}:config",
+                        f"agent:{session_id}:pid",
+                        f"agent:{session_id}:logs",
+                        f"agent:{session_id}:health",
+                        f"agent:{session_id}:logfile",
+                    ]
+                    if user_id:
+                        keys_to_delete.append(f"session:user:{user_id}")
+
+                    for key in keys_to_delete:
+                        redis_client.delete(key)
+
+                    # Remove from sets
+                    redis_client.srem('session:ready', session_id)
+                    redis_client.srem('session:starting', session_id)
+
+                    logger.debug(f"cleanup_redis_keys_deleted session_id={session_id} count={len(keys_to_delete)}")
+                except Exception as e:
+                    logger.warning(f"cleanup_redis_failed session_id={session_id} error={str(e)}")
 
                 cleaned_count += 1
 

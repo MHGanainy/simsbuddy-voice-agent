@@ -19,7 +19,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import aiohttp
 import redis
-import requests
 
 # Import structured logging
 from backend.shared.logging_config import setup_logging
@@ -53,6 +52,16 @@ load_dotenv(override=True)
 
 # Setup logging
 logger = setup_logging(service_name='voice-agent')
+
+# TEST_MODE configuration
+TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
+MOCK_REDIS = os.getenv('MOCK_REDIS', 'false').lower() == 'true'
+
+if TEST_MODE:
+    logger.info("=" * 60)
+    logger.info("TEST MODE ENABLED - Database and orchestrator calls will be mocked")
+    logger.info(f"MOCK_REDIS={MOCK_REDIS}")
+    logger.info("=" * 60)
 
 # ==================== AGENT CONFIGURATION ====================
 
@@ -230,28 +239,60 @@ class TranscriptStorage:
         return len(self.transcripts)
 
 
-async def heartbeat_task(session_id: str, transport=None, transcript_storage=None):
-    """Send heartbeat to orchestrator every minute for credit billing."""
+async def heartbeat_task(session_id: str, transport=None, transcript_storage=None, heartbeat_session=None):
+    """
+    Send heartbeat to orchestrator every minute for credit billing.
+
+    In TEST_MODE: Still runs every 60s (preserving scheduling logic),
+    but returns mock response instead of HTTP call.
+
+    Args:
+        session_id: Session identifier
+        transport: LiveKit transport for closing on insufficient credits
+        transcript_storage: Transcript storage for saving before stop
+        heartbeat_session: aiohttp ClientSession for HTTP requests (optional)
+    """
     await asyncio.sleep(60)
 
     while True:
         try:
             logger.info(f"heartbeat_sending session_id={session_id}")
 
-            orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
-
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(
-                    f"{orchestrator_url}/api/session/heartbeat",
-                    json={"sessionId": session_id},
-                    timeout=10
+            # TEST_MODE: Mock the heartbeat response
+            if TEST_MODE:
+                logger.info(
+                    f"TEST MODE: Skipping heartbeat HTTP call to orchestrator for {session_id}"
                 )
-            )
+                logger.info(
+                    f"TEST MODE: Would POST to orchestrator/api/session/heartbeat"
+                )
 
-            result = response.json()
+                # Return mock success response
+                result = {
+                    "status": "ok",
+                    "credits_remaining": 999,
+                    "message": "TEST MODE: Mock heartbeat success"
+                }
 
+                logger.info(
+                    f"TEST MODE: Mock heartbeat response - status=ok, credits_remaining=999"
+                )
+            else:
+                # Production: Actual HTTP call (async)
+                orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
+
+                if heartbeat_session is None:
+                    logger.error("heartbeat_session is None, cannot send heartbeat")
+                    result = {"status": "error", "message": "No HTTP session available"}
+                else:
+                    async with heartbeat_session.post(
+                        f"{orchestrator_url}/api/session/heartbeat",
+                        json={"sessionId": session_id},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        result = await response.json()
+
+            # Common handling for both TEST_MODE and production
             if result.get("status") == "stop":
                 logger.warning(f"heartbeat_stop_received session_id={session_id}")
 
@@ -350,6 +391,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Create aiohttp session for InworldTTS
         session = aiohttp.ClientSession()
+
+        # Create aiohttp session for heartbeat
+        heartbeat_session = aiohttp.ClientSession()
 
         # Create TTS service (Inworld)
         voice_speed = VOICE_SPEED_OVERRIDES.get(voice_id, TTS_DEFAULT_SPEED)
@@ -507,7 +551,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Start heartbeat task
         logger.info(f"starting_heartbeat_task session_id={room_name}")
-        heartbeat_handle = asyncio.create_task(heartbeat_task(room_name, transport, transcript_storage))
+        heartbeat_handle = asyncio.create_task(heartbeat_task(room_name, transport, transcript_storage, heartbeat_session))
 
         logger.info("pipeline_runner_starting")
         await runner.run(task)
@@ -566,12 +610,20 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         except Exception as e:
             logger.error(f"Error closing database: {e}")
 
-        # Close HTTP session
+        # Close HTTP sessions
         if 'session' in locals() and session and not session.closed:
             try:
                 await session.close()
+                logger.info("inworld_session_closed")
             except Exception as e:
                 logger.error(f"session_close_error: {e}")
+
+        if 'heartbeat_session' in locals() and heartbeat_session and not heartbeat_session.closed:
+            try:
+                await heartbeat_session.close()
+                logger.info("heartbeat_session_closed")
+            except Exception as e:
+                logger.error(f"heartbeat_session_close_error: {e}")
 
         # Mark session as completed
         try:
