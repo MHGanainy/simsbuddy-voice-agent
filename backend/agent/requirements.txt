@@ -26,6 +26,3 @@ torch              # PyTorch for ML models
 # Database for transcript storage
 asyncpg==0.29.0
 python-dotenv==1.0.0
-
-# HTTP client for heartbeat billing callbacks to orchestrator
-requests==2.31.0

@@ -238,3 +238,6 @@ dump.rdb
 # Supervisor
 supervisord.log
 supervisord.pid
+
+.claude/
+thoughts/

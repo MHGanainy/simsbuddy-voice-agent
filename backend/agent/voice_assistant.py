@@ -19,7 +19,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import aiohttp
 import redis
-import requests
 
 # Import structured logging
 from backend.shared.logging_config import setup_logging
@@ -230,7 +229,7 @@ class TranscriptStorage:
         return len(self.transcripts)
 
 
-async def heartbeat_task(session_id: str, transport=None, transcript_storage=None):
+async def heartbeat_task(session_id: str, transport=None, transcript_storage=None, heartbeat_session=None):
     """Send heartbeat to orchestrator every minute for credit billing."""
     await asyncio.sleep(60)
 
@@ -240,17 +239,17 @@ async def heartbeat_task(session_id: str, transport=None, transcript_storage=Non
 
             orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8000")
 
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(
-                    f"{orchestrator_url}/api/session/heartbeat",
-                    json={"sessionId": session_id},
-                    timeout=10
-                )
-            )
+            if heartbeat_session is None:
+                logger.error(f"heartbeat_session_missing session_id={session_id}")
+                await asyncio.sleep(60)
+                continue
 
-            result = response.json()
+            async with heartbeat_session.post(
+                f"{orchestrator_url}/api/session/heartbeat",
+                json={"sessionId": session_id},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                result = await response.json()
 
             if result.get("status") == "stop":
                 logger.warning(f"heartbeat_stop_received session_id={session_id}")
@@ -350,6 +349,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Create aiohttp session for InworldTTS
         session = aiohttp.ClientSession()
+
+        # Create dedicated aiohttp session for heartbeat
+        heartbeat_session = aiohttp.ClientSession()
+        logger.info("heartbeat_session_created")
 
         # Create TTS service (Inworld)
         voice_speed = VOICE_SPEED_OVERRIDES.get(voice_id, TTS_DEFAULT_SPEED)
@@ -507,7 +510,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Start heartbeat task
         logger.info(f"starting_heartbeat_task session_id={room_name}")
-        heartbeat_handle = asyncio.create_task(heartbeat_task(room_name, transport, transcript_storage))
+        heartbeat_handle = asyncio.create_task(
+            heartbeat_task(room_name, transport, transcript_storage, heartbeat_session)
+        )
 
         logger.info("pipeline_runner_starting")
         await runner.run(task)
@@ -573,6 +578,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             except Exception as e:
                 logger.error(f"session_close_error: {e}")
 
+        # Close heartbeat session
+        if 'heartbeat_session' in locals() and heartbeat_session and not heartbeat_session.closed:
+            try:
+                await heartbeat_session.close()
+                logger.info("heartbeat_session_closed")
+            except Exception as e:
+                logger.error(f"heartbeat_session_close_error: {e}")
+
         # Mark session as completed
         try:
             redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
@@ -608,4 +621,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"unhandled_exception: {e}", exc_info=True)
         sys.exit(1)
-
