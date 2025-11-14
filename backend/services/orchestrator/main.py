@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from livekit import api
-from redis.asyncio import Redis
+import redis
 
 # Import Celery and worker tasks
 from celery import Celery
@@ -44,8 +44,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
     raise ValueError("Missing required environment variables: LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET")
 
-# Redis connection (initialized on startup)
-redis_client: Redis = None
+# Redis connection
+try:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping()
+    logger.info(f"redis_connected redis_url={REDIS_URL}")
+except Exception as e:
+    logger.error(f"redis_connection_failed redis_url={REDIS_URL} error={str(e)}", exc_info=True)
+    raise
 
 # Celery app (for task revocation)
 celery_app = Celery('voice_agent_tasks')
@@ -66,30 +72,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# FastAPI startup/shutdown events for async Redis
-@app.on_event("startup")
-async def startup_event():
-    """Initialize async Redis client on startup"""
-    global redis_client
-    try:
-        redis_client = await Redis.from_url(REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info(f"redis_connected redis_url={REDIS_URL}")
-    except Exception as e:
-        logger.error(f"redis_connection_failed redis_url={REDIS_URL} error={str(e)}", exc_info=True)
-        raise
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Close Redis client on shutdown"""
-    global redis_client
-    if redis_client:
-        try:
-            await redis_client.close()
-            logger.info("redis_client_closed")
-        except Exception as e:
-            logger.error(f"redis_client_close_error error={str(e)}", exc_info=True)
 
 # Voice configuration - must match backend/agent/voice_assistant.py VOICE_SPEED_OVERRIDES
 VALID_VOICES = ["Ashley", "Craig", "Edward", "Olivia", "Wendy", "Priya"]
@@ -221,7 +203,7 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
 
     # Update session status to indicate credit depletion
     try:
-        await redis_client.hset(f'session:{session_id}', mapping={
+        redis_client.hset(f'session:{session_id}', mapping={
             'status': 'terminated',
             'terminationReason': 'insufficient_credits',
             'terminatedAt': int(time.time())
@@ -266,7 +248,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
     try:
         # Get session data
         session_key = f"session:{session_id}"
-        session_data = await redis_client.hgetall(session_key)
+        session_data = redis_client.hgetall(session_key)
 
         if not session_data:
             logger.warning(f"cleanup_no_session_found session_id={session_id}")
@@ -330,7 +312,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
         pid_str = session_data.get('agentPid')
         if not pid_str:
             # Try alternate storage location
-            pid_str = await redis_client.get(f"agent:{session_id}:pid")
+            pid_str = redis_client.get(f"agent:{session_id}:pid")
 
         if pid_str:
             try:
@@ -406,11 +388,11 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                 keys_to_delete.append(f"session:user:{user_id}")
 
             for key in keys_to_delete:
-                await redis_client.delete(key)
+                redis_client.delete(key)
 
             # Remove from sets
-            await redis_client.srem('session:ready', session_id)
-            await redis_client.srem('session:starting', session_id)
+            redis_client.srem('session:ready', session_id)
+            redis_client.srem('session:starting', session_id)
 
             cleanup_details["redis_cleaned"] = True
             logger.info(f"cleanup_redis_cleaned session_id={session_id} keys_deleted={len(keys_to_delete)}")
@@ -558,8 +540,8 @@ async def start_session(request: SessionStartRequest):
             if request.systemPrompt:
                 config_data['systemPrompt'] = request.systemPrompt
 
-            await redis_client.hset(config_key, mapping=config_data)
-            await redis_client.expire(config_key, 14400)  # 4 hour TTL same as session
+            redis_client.hset(config_key, mapping=config_data)
+            redis_client.expire(config_key, 14400)  # 4 hour TTL same as session
             logger.info(f"session_config_stored session_id={session_id} user_name={request.userName} voice_id={voice_id} config_keys={list(config_data.keys())}")
         except Exception as e:
             # Non-fatal, just log
@@ -592,8 +574,8 @@ async def start_session(request: SessionStartRequest):
                 'status': 'starting',
                 'startTime': str(int(time.time()))
             }
-            await redis_client.hset(session_key, mapping=session_data)
-            await redis_client.expire(session_key, 14400)  # 4 hours
+            redis_client.hset(session_key, mapping=session_data)
+            redis_client.expire(session_key, 14400)  # 4 hours
 
             logger.info(f"session_state_stored ttl_seconds=14400")
         except Exception as e:
@@ -652,7 +634,7 @@ async def end_session(request: SessionEndRequest):
 
         if True:  # Removed LogContext wrapper
             # Check if session exists
-            session_exists = await redis_client.exists(f"session:{session_id}")
+            session_exists = redis_client.exists(f"session:{session_id}")
             if not session_exists:
                 logger.warning(f"session_not_found session_id={session_id}")
                 raise HTTPException(
@@ -720,7 +702,7 @@ async def heartbeat(request: HeartbeatRequest):
             logger.debug(f"heartbeat_received session_id={session_id}")
 
             # Get session data from Redis
-            session_data = await redis_client.hgetall(f"session:{session_id}")
+            session_data = redis_client.hgetall(f"session:{session_id}")
 
             if not session_data:
                 logger.warning(f"heartbeat_session_not_found session_id={session_id}")
@@ -927,7 +909,7 @@ async def debug_session_processes(session_id: str):
 
         # Get session data
         session_key = f"session:{session_id}"
-        session_data = await redis_client.hgetall(session_key)
+        session_data = redis_client.hgetall(session_key)
 
         if not session_data:
             raise HTTPException(
@@ -941,7 +923,7 @@ async def debug_session_processes(session_id: str):
 
         if not pid_str:
             # Try alternate location
-            pid_str = await redis_client.get(f"agent:{session_id}:pid")
+            pid_str = redis_client.get(f"agent:{session_id}:pid")
 
         result = {
             "session_id": session_id,
@@ -1044,7 +1026,7 @@ async def list_sessions():
         logger.info(f"admin_list_sessions_requested")
 
         # Get all session keys from Redis
-        session_keys = await redis_client.keys("session:*")
+        session_keys = redis_client.keys("session:*")
 
         sessions = []
         for key in session_keys:
@@ -1056,7 +1038,7 @@ async def list_sessions():
                 continue
 
             session_id = key.replace('session:', '')
-            session_data = await redis_client.hgetall(key)
+            session_data = redis_client.hgetall(key)
 
             if not session_data:
                 continue
@@ -1073,7 +1055,7 @@ async def list_sessions():
 
             # Get agent PID to check if process is running
             agent_pid_key = f"agent:{session_id}:pid"
-            agent_pid = await redis_client.get(agent_pid_key)
+            agent_pid = redis_client.get(agent_pid_key)
 
             is_active = False
             if agent_pid:
@@ -1143,7 +1125,7 @@ async def get_session_logs(session_id: str, limit: int = 100):
 
         # Get logs from Redis (stored by agent)
         log_key = f"agent:{session_id}:logs"
-        logs = await redis_client.lrange(log_key, 0, -1)
+        logs = redis_client.lrange(log_key, 0, -1)
 
         # Decode and parse logs
         parsed_logs = []
@@ -1410,7 +1392,7 @@ async def health_check():
     """Detailed health check"""
     redis_healthy = False
     try:
-        await redis_client.ping()
+        redis_client.ping()
         redis_healthy = True
     except Exception as e:
         logger.error(f"health_redis_check_failed error={str(e)}", exc_info=True)
