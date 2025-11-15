@@ -292,15 +292,16 @@ class TranscriptionReporter:
         try:
             if timestamp is None:
                 timestamp = asyncio.get_event_loop().time()
-            
+
             data = json.dumps({
                 "type": "transcription",
                 "speaker": "user",
                 "text": text,
                 "timestamp": timestamp
             })
-            
-            await self.transport.send_message(data)
+
+            # Fire and forget - don't block audio pipeline for frontend notifications
+            asyncio.create_task(self.transport.send_message(data))
             logger.debug(f"Sent user transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send user transcript: {e}")
@@ -310,15 +311,16 @@ class TranscriptionReporter:
         try:
             if timestamp is None:
                 timestamp = asyncio.get_event_loop().time()
-            
+
             data = json.dumps({
                 "type": "transcription",
                 "speaker": "assistant",
                 "text": text,
                 "timestamp": timestamp
             })
-            
-            await self.transport.send_message(data)
+
+            # Fire and forget - don't block audio pipeline for frontend notifications
+            asyncio.create_task(self.transport.send_message(data))
             logger.debug(f"Sent assistant transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send assistant transcript: {e}")
@@ -369,12 +371,26 @@ async def heartbeat_task(session_id: str, transport=None, transcript_storage=Non
                 await asyncio.sleep(60)
                 continue
 
-            async with heartbeat_session.post(
-                f"{orchestrator_url}/api/session/heartbeat",
-                json={"sessionId": session_id},
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                result = await response.json()
+            # Non-blocking heartbeat with 2-second timeout to prevent event loop blocking
+            # Wrapped in asyncio.timeout for additional protection against slow responses
+            try:
+                async with asyncio.timeout(2):
+                    async with heartbeat_session.post(
+                        f"{orchestrator_url}/api/session/heartbeat",
+                        json={"sessionId": session_id},
+                        timeout=aiohttp.ClientTimeout(total=2)  # Reduced from 10s to prevent blocking
+                    ) as response:
+                        result = await response.json()
+            except asyncio.TimeoutError:
+                # Timeout is not critical - heartbeat will retry in 60s
+                logger.warning(f"heartbeat_timeout session_id={session_id} timeout=2s action=continuing")
+                await asyncio.sleep(60)
+                continue
+            except Exception as e:
+                # Network errors are not critical - heartbeat will retry in 60s
+                logger.warning(f"heartbeat_network_error session_id={session_id} error={str(e)} action=continuing")
+                await asyncio.sleep(60)
+                continue
 
             if result.get("status") == "stop":
                 logger.warning(f"heartbeat_stop_received session_id={session_id}")
