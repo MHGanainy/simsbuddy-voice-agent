@@ -56,18 +56,27 @@ class AgentSpawnTask(Task):
     retry_jitter = True
 
 
-def continuous_log_reader(process, session_id, log_file_path):
+def continuous_log_reader(process, session_id, log_file_path, start_time):
     """
     Background thread to continuously read agent logs.
 
     This prevents the stdout pipe from filling up and blocking the agent process.
     Logs are written to both a file and Redis for different access patterns.
 
+    PERFORMANCE OPTIMIZATION: Redis writes are limited to the first 60 seconds
+    after agent startup to eliminate backpressure on the stdout pipe. After 60s,
+    only file and stdout writes continue (Redis is no longer needed after startup).
+
     Args:
         process: The subprocess.Popen object
         session_id: Session identifier for Redis keys
         log_file_path: Path to the log file
+        start_time: Unix timestamp when agent spawning began (for Redis cutoff)
     """
+    # Calculate Redis cutoff time (60 seconds after agent start)
+    redis_cutoff_time = start_time + 60
+    redis_disabled_logged = False  # Track if we've logged the shutdown message
+
     try:
         with open(log_file_path, 'a', buffering=1) as log_file:  # Line buffered
             for line in process.stdout:
@@ -77,19 +86,30 @@ def continuous_log_reader(process, session_id, log_file_path):
                 line = line.strip()
 
                 # Write to file (for tail -f and long-term storage)
+                # ✅ Always continues - never disabled
                 log_file.write(line + '\n')
-                
-                # ✨ NEW: ALSO print to stdout so Railway captures it!
+
+                # Print to stdout so Railway captures it
+                # ✅ Always continues - never disabled
                 print(f"[AGENT-{session_id[:12]}] {line}")
                 sys.stdout.flush()  # Force immediate output
 
-                # Store in Redis (for API access, keep last 100 lines)
-                try:
-                    redis_client.rpush(f'agent:{session_id}:logs', line)
-                    redis_client.ltrim(f'agent:{session_id}:logs', -MAX_LOG_ENTRIES, -1)
-                except Exception as e:
-                    # Don't let Redis errors stop log file writing
-                    logger.warning(f"log_reader_redis_error session_id={session_id} error={str(e)}")
+                # Store in Redis - ONLY during first 60 seconds
+                # ⏱️ Time-based cutoff to eliminate backpressure after startup phase
+                current_time = time.time()
+                if current_time < redis_cutoff_time:
+                    # STARTUP PHASE: Write to Redis for connection detection
+                    try:
+                        redis_client.rpush(f'agent:{session_id}:logs', line)
+                        redis_client.ltrim(f'agent:{session_id}:logs', -MAX_LOG_ENTRIES, -1)
+                    except Exception as e:
+                        # Don't let Redis errors stop log file writing
+                        logger.warning(f"log_reader_redis_error session_id={session_id} error={str(e)}")
+                else:
+                    # POST-STARTUP: Redis writes disabled, log once when this happens
+                    if not redis_disabled_logged:
+                        logger.info(f"log_reader_redis_disabled session_id={session_id} reason=startup_complete elapsed_seconds={current_time - start_time:.1f}")
+                        redis_disabled_logged = True
 
     except Exception as e:
         logger.error(f"log_reader_thread_error session_id={session_id} error={str(e)}", exc_info=True)
@@ -199,9 +219,10 @@ def spawn_voice_agent(self, session_id, user_id=None):
 
             # Start background thread for continuous log reading
             # This prevents the pipe from filling up and blocking the agent
+            # Pass start_time to enable 60-second Redis cutoff optimization
             log_thread = threading.Thread(
                 target=continuous_log_reader,
-                args=(process, session_id, log_file_path),
+                args=(process, session_id, log_file_path, start_time),
                 daemon=True,
                 name=f'log-reader-{session_id}'
             )
