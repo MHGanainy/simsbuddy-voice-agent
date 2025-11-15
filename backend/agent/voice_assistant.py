@@ -218,7 +218,7 @@ STT_VAD_FORCE_ENDPOINT = True
 STT_LANGUAGE = "en"
 
 # LLM Configuration (Groq)
-LLM_MODEL = "llama-3.3-70b-versatile"
+LLM_MODEL = "llama-3.1-8b-instant"
 LLM_STREAM = True
 LLM_MAX_TOKENS = 100
 LLM_TEMPERATURE = 0.6
