@@ -469,24 +469,29 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info("livekit_transport_created")
 
         # Create STT service (AssemblyAI)
-        stt = AssemblyAISTTService(
-            api_key=os.getenv("ASSEMBLY_API_KEY"),
-            connection_params=AssemblyAIConnectionParams(
-                sample_rate=STT_SAMPLE_RATE,
-                encoding=STT_ENCODING,
-                model=STT_MODEL,
-                format_turns=STT_FORMAT_TURNS,
-                end_of_turn_confidence_threshold=STT_END_OF_TURN_CONFIDENCE,
-                min_end_of_turn_silence_when_confident=STT_MIN_SILENCE_CONFIDENT,
-                max_turn_silence=STT_MAX_TURN_SILENCE,
-                enable_partial_transcripts=STT_ENABLE_PARTIALS,
-                use_immutable_finals=STT_IMMUTABLE_FINALS,
-                punctuate=STT_PUNCTUATE,
-                format_text=STT_FORMAT_TEXT,
-            ),
-            vad_force_turn_endpoint=STT_VAD_FORCE_ENDPOINT,
-            language=STT_LANGUAGE,
-        )
+        # stt = AssemblyAISTTService(
+        #     api_key=os.getenv("ASSEMBLY_API_KEY"),
+        #     connection_params=AssemblyAIConnectionParams(
+        #         sample_rate=STT_SAMPLE_RATE,
+        #         encoding=STT_ENCODING,
+        #         model=STT_MODEL,
+        #         format_turns=STT_FORMAT_TURNS,
+        #         end_of_turn_confidence_threshold=STT_END_OF_TURN_CONFIDENCE,
+        #         min_end_of_turn_silence_when_confident=STT_MIN_SILENCE_CONFIDENT,
+        #         max_turn_silence=STT_MAX_TURN_SILENCE,
+        #         enable_partial_transcripts=STT_ENABLE_PARTIALS,
+        #         use_immutable_finals=STT_IMMUTABLE_FINALS,
+        #         punctuate=STT_PUNCTUATE,
+        #         format_text=STT_FORMAT_TEXT,
+        #     ),
+        #     vad_force_turn_endpoint=STT_VAD_FORCE_ENDPOINT,
+        #     language=STT_LANGUAGE,
+        # )
+        stt = OpenAISTTService(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model="gpt-4o-transcribe",
+        prompt="Expect words related to dogs, such as breed names.",
+    )
         logger.info(f"assemblyai_stt_initialized model={STT_MODEL}")
 
         # Create LLM service (Groq)
