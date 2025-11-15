@@ -474,8 +474,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         stt = None
         stt_service_name = "unknown"
 
-        # Try AssemblyAI first
-        if os.getenv("ASSEMBLY_API_KEY"):
+        # Skip AssemblyAI and use OpenAI directly (temporary fix for connection issues)
+        # TODO: Re-enable AssemblyAI once connection issues are resolved
+        if False and os.getenv("ASSEMBLY_API_KEY"):
             try:
                 logger.info("Attempting to initialize AssemblyAI STT service")
                 stt = AssemblyAISTTService(
