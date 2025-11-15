@@ -512,9 +512,12 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                     stt = OpenAISTTService(
                         api_key=os.getenv("OPENAI_API_KEY"),
                         model="gpt-4o-transcribe",
+                        language=STT_LANGUAGE,
+                        temperature=0.0,  # Low temperature for accurate transcription
+                        sample_rate=STT_SAMPLE_RATE,
                     )
                     stt_service_name = "OpenAI (gpt-4o-transcribe)"
-                    logger.info("stt_service_initialized service=OpenAI model=gpt-4o-transcribe")
+                    logger.info(f"stt_service_initialized service=OpenAI model=gpt-4o-transcribe language={STT_LANGUAGE} sample_rate={STT_SAMPLE_RATE}")
                 except Exception as e:
                     logger.error(f"openai_stt_failed error={str(e)}")
                     raise Exception(f"Both AssemblyAI and OpenAI STT services failed. Cannot proceed.") from e
