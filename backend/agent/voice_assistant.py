@@ -466,7 +466,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-                turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+                # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
         logger.info("livekit_transport_created")
