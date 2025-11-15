@@ -9,14 +9,14 @@
 # Do NOT remove this file - it serves as the canonical reference for
 # what the voice agent subprocess needs to run.
 
-# Pipecat framework + integrations (LiveKit, Inworld TTS)
-pipecat-ai[livekit,inworld,openai]==0.0.92
+# Pipecat framework + integrations (LiveKit, Inworld TTS, Cerebras)
+pipecat-ai[livekit,inworld,openai,cerebras]==0.0.92
 
 # Speech-to-Text (AssemblyAI streaming)
 assemblyai==0.44.3
 
-# LLM (Groq for fast inference)
-groq==0.9.0
+# LLM (Cerebras for ultra-fast inference, Groq disabled)
+# groq==0.9.0  # Temporarily disabled
 
 # ML dependencies for audio processing
 onnxruntime        # VAD (Voice Activity Detection)

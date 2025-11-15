@@ -46,7 +46,8 @@ from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.runner.livekit import configure
 from pipecat.services.inworld.tts import InworldTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
-from pipecat.services.groq.llm import GroqLLMService
+# from pipecat.services.groq.llm import GroqLLMService  # Temporarily disabled
+from pipecat.services.cerebras.llm import CerebrasLLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 from pipecat.services.openai.stt import OpenAISTTService
 
@@ -217,8 +218,8 @@ STT_FORMAT_TEXT = False
 STT_VAD_FORCE_ENDPOINT = True
 STT_LANGUAGE = "en"
 
-# LLM Configuration (Groq)
-LLM_MODEL = "llama-3.1-8b-instant"
+# LLM Configuration (Cerebras - temporarily replacing Groq)
+LLM_MODEL = "llama-3.3-70b"
 LLM_STREAM = True
 LLM_MAX_TOKENS = 100
 LLM_TEMPERATURE = 0.6
@@ -527,18 +528,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         logger.info(f"stt_service_active service={stt_service_name}")
 
-        # Create LLM service (Groq)
-        llm = GroqLLMService(
-            api_key=os.getenv("GROQ_API_KEY"),
-            model=LLM_MODEL,
-            stream=LLM_STREAM,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-            top_p=LLM_TOP_P,
-            presence_penalty=LLM_PRESENCE_PENALTY,
-            frequency_penalty=LLM_FREQUENCY_PENALTY,
+        # Create LLM service (Cerebras - temporarily replacing Groq)
+        llm = CerebrasLLMService(
+            api_key=os.getenv("CEREBRAS_API_KEY"),
+            model="llama-3.3-70b",  # Cerebras Llama 3.3 70B
+            # Note: Cerebras uses OpenAI-compatible interface, supports these params:
+            # stream, max_tokens, temperature, top_p, presence_penalty, frequency_penalty
         )
-        logger.info(f"groq_llm_initialized model={LLM_MODEL}")
+        logger.info("cerebras_llm_initialized model=llama-3.3-70b")
 
         # Create aiohttp session for InworldTTS
         session = aiohttp.ClientSession()
