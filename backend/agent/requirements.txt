@@ -10,7 +10,7 @@
 # what the voice agent subprocess needs to run.
 
 # Pipecat framework + integrations (LiveKit, Inworld TTS)
-pipecat-ai[livekit,inworld]==0.0.92
+pipecat-ai[livekit,inworld,openai]==0.0.92
 
 # Speech-to-Text (AssemblyAI streaming)
 assemblyai==0.44.3

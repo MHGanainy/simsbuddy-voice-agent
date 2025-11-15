@@ -48,6 +48,7 @@ from pipecat.services.inworld.tts import InworldTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
+from pipecat.services.openai.stt import OpenAISTTService
 
 load_dotenv(override=True)
 
