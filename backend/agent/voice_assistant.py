@@ -190,7 +190,7 @@ BOT_INTERRUPTION_TIMEOUT = 0.2
 
 # TTS Configuration (Inworld)
 TTS_STREAMING = True
-TTS_TEMPERATURE = 1.1
+TTS_TEMPERATURE = 0.8
 TTS_DEFAULT_SPEED = 1.0
 
 VOICE_SPEED_OVERRIDES = {
@@ -221,34 +221,25 @@ STT_LANGUAGE = "en"
 LLM_MODEL = "llama-3.3-70b"
 LLM_STREAM = True
 LLM_MAX_TOKENS = 100
-LLM_TEMPERATURE = 0.6
-LLM_TOP_P = 0.8
-LLM_PRESENCE_PENALTY = 0.15
-LLM_FREQUENCY_PENALTY = 0.30
+LLM_TEMPERATURE = 0.2
 
 # Critical Rules (appended to all system prompts)
 CRITICAL_RULES = """
 CRITICAL RULES:
 You are roleplaying. Everything you write will be spoken aloud by a text-to-speech system, so follow these rules strictly:
-
-Keep answers short and only answer when asked about a specific point; do not provide unrequested information.
-
+Keep answers short and only answer when asked about a specific point; do not provide unrequested information even if you feel it is related(For example: do you smoke? answer yer or not and do not volunter to mention alcohol unless you are asked about it)
+If you are being asked an open question and you should not give open answer, ask such as what to get a direct question.
 NEVER include:
 - Stage directions like "looks anxious," "appears worried," "seems uncomfortable"
-- Actions in asterisks like *sighs*, *pauses*, *fidgets*
+- Actions in asterisks like *sighs*, *pauses*, *fidgets* or in Brackets
 - Any descriptive text about body language or appearance
-- Brackets except for the emotion tags below
-
-ONLY output accepted:
-- Actual spoken words the actor would say
-- Occasional use of Emotion tags at the START of sentences (when needed): [happy], [sad], [angry], [surprised], [fearful], [disgusted]
-- No other emotional tags are supported or allowed to use such as [anxious]. PLEASE DO NOT USE UNSUPPORTED TAGS at any circumstances.
-
 Speaking style:
 - Keep responses short and conversational (1-2 sentences max)
 - Only answer what is specifically asked
 - Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
 - Speak like a real person, not like you're describing a scene.
+- This role playing is part of exam so stick to the rules please
+
 """.strip()
 
 # ==================== END CONFIGURATION ====================
@@ -524,11 +515,13 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         # Create LLM service (Cerebras - temporarily replacing Groq)
         llm = CerebrasLLMService(
             api_key=os.getenv("CEREBRAS_API_KEY"),
-            model="llama-3.3-70b",  # Cerebras Llama 3.3 70B
-            # Note: Cerebras uses OpenAI-compatible interface, supports these params:
-            # stream, max_tokens, temperature, top_p, presence_penalty, frequency_penalty
+            model=LLM_MODEL,
+            params=CerebrasLLMService.InputParams(
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_TOKENS,
+            )
         )
-        logger.info("cerebras_llm_initialized model=llama-3.3-70b")
+        logger.info(f"cerebras_llm_initialized model={LLM_MODEL} temperature={LLM_TEMPERATURE} max_tokens={LLM_MAX_TOKENS}")
 
         # Create aiohttp session for InworldTTS
         session = aiohttp.ClientSession()
@@ -538,6 +531,8 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info("heartbeat_session_created")
 
         # Create TTS service (Inworld)
+        # Note: Speed parameter is not currently supported by Pipecat's InworldTTSService
+        # Only temperature is available in InputParams
         voice_speed = VOICE_SPEED_OVERRIDES.get(voice_id, TTS_DEFAULT_SPEED)
         tts = InworldTTSService(
             api_key=os.getenv("INWORLD_API_KEY"),
@@ -547,10 +542,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             streaming=TTS_STREAMING,
             params=InworldTTSService.InputParams(
                 temperature=TTS_TEMPERATURE,
-                speed=voice_speed
+                # speed parameter not supported by Pipecat's InworldTTSService yet
             ),
         )
-        logger.info(f"inworld_tts_initialized voice_id={voice_id} speed={voice_speed}")
+        logger.info(f"inworld_tts_initialized voice_id={voice_id} temperature={TTS_TEMPERATURE}")
 
         # Create conversation context
         base_prompt = system_prompt or "You are a helpful AI voice assistant."
