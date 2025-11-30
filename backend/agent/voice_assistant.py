@@ -46,8 +46,8 @@ from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.runner.livekit import configure
 from pipecat.services.inworld.tts import InworldTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAIConnectionParams
-# from pipecat.services.groq.llm import GroqLLMService  # Temporarily disabled
-from pipecat.services.cerebras.llm import CerebrasLLMService
+from pipecat.services.groq.llm import GroqLLMService
+# from pipecat.services.cerebras.llm import CerebrasLLMService  # Temporarily disabled
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 load_dotenv(override=True)
@@ -217,8 +217,8 @@ STT_FORMAT_TEXT = False
 STT_VAD_FORCE_ENDPOINT = True
 STT_LANGUAGE = "en"
 
-# LLM Configuration (Cerebras - temporarily replacing Groq)
-LLM_MODEL = "llama-3.3-70b"
+# LLM Configuration (Groq)
+LLM_MODEL = "llama-3.3-70b-versatile"
 LLM_STREAM = True
 LLM_MAX_TOKENS = 100
 LLM_TEMPERATURE = 0.2
@@ -471,7 +471,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=LiveKitParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.3)),
                 # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
@@ -512,16 +512,15 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         logger.info(f"stt_service_active service={stt_service_name}")
 
-        # Create LLM service (Cerebras - temporarily replacing Groq)
-        llm = CerebrasLLMService(
-            api_key=os.getenv("CEREBRAS_API_KEY"),
+        # Create LLM service (Groq)
+        llm = GroqLLMService(
+            api_key=os.getenv("GROQ_API_KEY"),
             model=LLM_MODEL,
-            params=CerebrasLLMService.InputParams(
-                temperature=LLM_TEMPERATURE,
-                max_tokens=LLM_MAX_TOKENS,
-            )
+            stream=LLM_STREAM,
+            max_tokens=LLM_MAX_TOKENS,
+            temperature=LLM_TEMPERATURE,
         )
-        logger.info(f"cerebras_llm_initialized model={LLM_MODEL} temperature={LLM_TEMPERATURE} max_tokens={LLM_MAX_TOKENS}")
+        logger.info(f"groq_llm_initialized model={LLM_MODEL} temperature={LLM_TEMPERATURE} max_tokens={LLM_MAX_TOKENS}")
 
         # Create aiohttp session for InworldTTS
         session = aiohttp.ClientSession()
