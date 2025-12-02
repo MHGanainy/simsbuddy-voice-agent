@@ -9,7 +9,7 @@ redis==5.0.1
 # Voice agent dependencies (required for subprocess spawning)
 pipecat-ai[livekit,inworld,openai,cerebras]==0.0.92
 assemblyai==0.44.3
-# groq==0.9.0  # Temporarily disabled
+groq==0.9.0  # Temporarily disabled
 onnxruntime
 transformers
 torch
