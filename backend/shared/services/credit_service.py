@@ -70,7 +70,8 @@ class CreditService:
     @classmethod
     async def get_student_id_from_session(cls, session_id: str) -> Optional[str]:
         """
-        Get student_id from SimulationAttempt using correlation_token.
+        Get student_id from SimulationAttempt or InterviewSimulationAttempt using correlation_token.
+        Searches both simulation_attempts and interview_simulation_attempts tables.
 
         Args:
             session_id: The session ID (correlation_token)
@@ -87,6 +88,11 @@ class CreditService:
                     SELECT student_id
                     FROM simulation_attempts
                     WHERE "correlationToken" = $1
+                    UNION ALL
+                    SELECT student_id
+                    FROM interview_simulation_attempts
+                    WHERE "correlationToken" = $1
+                    LIMIT 1
                     """,
                     session_id
                 )
@@ -94,7 +100,7 @@ class CreditService:
                 if student_id:
                     logger.debug(f"Found student_id {student_id} for session {session_id}")
                 else:
-                    logger.warning(f"No SimulationAttempt found for session {session_id}")
+                    logger.warning(f"No SimulationAttempt or InterviewSimulationAttempt found for session {session_id}")
 
                 return student_id
 
@@ -267,15 +273,44 @@ class CreditService:
                     )
 
                     # Update SimulationAttempt.minutesBilled (store count, not minute number)
-                    await connection.execute(
+                    # Determine which table contains the session and update only that table
+                    table_name = await connection.fetchval(
                         """
-                        UPDATE simulation_attempts
-                        SET minutes_billed = $1
-                        WHERE "correlationToken" = $2
+                        SELECT 'simulation_attempts'::text
+                        FROM simulation_attempts
+                        WHERE "correlationToken" = $1
+                        UNION ALL
+                        SELECT 'interview_simulation_attempts'::text
+                        FROM interview_simulation_attempts
+                        WHERE "correlationToken" = $1
+                        LIMIT 1
                         """,
-                        minute_number + 1,  # Convert minute number to count (0 -> 1, 1 -> 2, etc.)
                         session_id
                     )
+                    
+                    if table_name == 'simulation_attempts':
+                        result = await connection.execute(
+                            """
+                            UPDATE simulation_attempts
+                            SET minutes_billed = $1
+                            WHERE "correlationToken" = $2
+                            """,
+                            minute_number + 1,  # Convert minute number to count (0 -> 1, 1 -> 2, etc.)
+                            session_id
+                        )
+                    elif table_name == 'interview_simulation_attempts':
+                        result = await connection.execute(
+                            """
+                            UPDATE interview_simulation_attempts
+                            SET minutes_billed = $1
+                            WHERE "correlationToken" = $2
+                            """,
+                            minute_number + 1,  # Convert minute number to count (0 -> 1, 1 -> 2, etc.)
+                            session_id
+                        )
+                    else:
+                        logger.error(f"Session {session_id} not found in either table when updating minutes_billed")
+                        raise ValueError(f"Session {session_id} not found in database")
 
                     logger.info(
                         f"Credit deducted: student={student_id}, session={session_id}, "
@@ -327,13 +362,18 @@ class CreditService:
         try:
             pool = await cls.get_pool()
 
-            # Get current minutesBilled from SimulationAttempt
+            # Get current minutesBilled from SimulationAttempt or InterviewSimulationAttempt
             async with pool.acquire() as connection:
                 row = await connection.fetchrow(
                     """
                     SELECT minutes_billed, student_id
                     FROM simulation_attempts
                     WHERE "correlationToken" = $1
+                    UNION ALL
+                    SELECT minutes_billed, student_id
+                    FROM interview_simulation_attempts
+                    WHERE "correlationToken" = $1
+                    LIMIT 1
                     """,
                     session_id
                 )
