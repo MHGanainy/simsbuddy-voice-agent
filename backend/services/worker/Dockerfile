@@ -49,9 +49,9 @@ ENV PYTHONUNBUFFERED=1 \
     AGENT_LOG_DIR=/var/log/voice-agents
 
 # Health check: Verify Celery worker is responding
-# Check every 30s, timeout after 10s, start checking after 60s (for model loading)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD celery -A tasks inspect ping -d celery@$HOSTNAME || exit 1
+# Check every 60s, timeout after 15s, start checking after 90s (for startup)
+HEALTHCHECK --interval=60s --timeout=15s --start-period=90s --retries=3 \
+    CMD python3 /app/backend/services/worker/healthcheck.py || exit 1
 
 # Start supervisor (runs Celery worker + Celery beat)
 CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]

@@ -17,6 +17,19 @@ broker_connection_retry = True
 broker_connection_max_retries = 10
 broker_connection_retry_delay = 5
 
+# Redis transport options - prevent connection freezes
+broker_transport_options = {
+    'visibility_timeout': 3600,  # 1 hour - task visibility before requeue
+    'socket_timeout': 30,  # Socket timeout in seconds
+    'socket_connect_timeout': 30,  # Connection timeout
+    'retry_on_timeout': True,  # Retry on socket timeout
+    'health_check_interval': 30,  # Check connection health every 30s
+}
+
+# Worker heartbeat - detect frozen workers
+worker_lost_wait = 20  # Seconds to wait for worker response before considering lost
+broker_heartbeat = 120  # Broker heartbeat interval (for AMQP, but good practice)
+
 # Result backend (task results storage)
 result_backend = redis_url
 result_expires = 3600  # Results expire after 1 hour
@@ -35,6 +48,7 @@ worker_max_tasks_per_child = 50  # Restart worker after 50 tasks (prevents memor
 worker_disable_rate_limits = True  # Disable rate limiting for faster processing
 worker_send_task_events = True  # Enable task events for monitoring
 task_send_sent_event = True  # Send event when task is sent
+worker_cancel_long_running_tasks_on_connection_loss = True  # Cancel stuck tasks on connection loss
 
 # Task execution settings - longer timeouts for agent spawning
 task_acks_late = True  # Acknowledge task after completion (not before)
