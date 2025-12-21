@@ -186,7 +186,7 @@ PARTICIPANT_GREETING_DELAY = 0.2
 
 # Context Aggregator Settings
 AGGREGATION_TIMEOUT = 0.2
-BOT_INTERRUPTION_TIMEOUT = 0.2
+BOT_INTERRUPTION_TIMEOUT = 0.35
 
 # TTS Configuration (Inworld)
 TTS_STREAMING = True
@@ -226,6 +226,7 @@ LLM_TEMPERATURE = 0.2
 # Critical Rules (appended to all system prompts)
 CRITICAL_RULES = """
 CRITICAL RULES:
+This roleplay is part of an exam. Follow these rules strictly:
 You are roleplaying. Everything you write will be spoken aloud by a text-to-speech system, so follow these rules strictly:
 Keep answers short and only answer when asked about a specific point; do not provide unrequested information even if you feel it is related(For example: do you smoke? answer yer or not and do not volunter to mention alcohol unless you are asked about it)
 If you are being asked an open question and you should not give open answer, ask such as what to get a direct question.
@@ -237,8 +238,10 @@ Speaking style:
 - Keep responses short and conversational (1-2 sentences max)
 - Only answer what is specifically asked
 - Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
+- Do NOT routinely repeat the speaker’s statements. If you understand, simply respond as a person naturally would—concise, genuine, and context-appropriate
 - Speak like a real person, not like you're describing a scene.
-- This role playing is part of exam so stick to the rules please
+- When answering yes/no questions, reply with the shortest natural response. Avoid repeating the full question in your answer
+- FINAL REMINDER: Only answer what is directly asked. Do not anticipate questions or provide related information unless specifically requested.
 
 """.strip()
 
@@ -471,7 +474,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=LiveKitParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.3)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.35)),
                 # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
@@ -547,7 +550,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info(f"inworld_tts_initialized voice_id={voice_id} temperature={TTS_TEMPERATURE}")
 
         # Create conversation context
-        base_prompt = system_prompt or "You are a helpful AI voice assistant."
+        base_prompt = system_prompt or "You are a role player actor so follow the script and the critical rules strictly."
         full_system_prompt = f"{base_prompt}\n\n{CRITICAL_RULES}"
 
         messages = [{"role": "system", "content": full_system_prompt}]
