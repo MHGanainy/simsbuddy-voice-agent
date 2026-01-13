@@ -26,6 +26,7 @@ from backend.shared.logging_config import setup_logging
 # Import database service for transcript storage
 from backend.shared.services import Database
 
+from pipecat.audio.interruptions.min_words_interruption_strategy import MinWordsInterruptionStrategy
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -185,7 +186,7 @@ ENABLE_TIMING = os.getenv('LOG_LEVEL', 'INFO').upper() == 'DEBUG'
 PARTICIPANT_GREETING_DELAY = 0.2
 
 # Context Aggregator Settings
-AGGREGATION_TIMEOUT = 0.2
+AGGREGATION_TIMEOUT = 0.1
 BOT_INTERRUPTION_TIMEOUT = 0.35
 
 # TTS Configuration (Inworld)
@@ -207,14 +208,14 @@ STT_SAMPLE_RATE = 16000
 STT_ENCODING = "pcm_s16le"
 STT_MODEL = "universal-streaming"
 STT_FORMAT_TURNS = False
-STT_END_OF_TURN_CONFIDENCE = 0.70
-STT_MIN_SILENCE_CONFIDENT = 50
-STT_MAX_TURN_SILENCE = 200
+STT_END_OF_TURN_CONFIDENCE = 0.40
+STT_MIN_SILENCE_CONFIDENT = 200
+STT_MAX_TURN_SILENCE = 450
 STT_ENABLE_PARTIALS = True
 STT_IMMUTABLE_FINALS = True
 STT_PUNCTUATE = False
 STT_FORMAT_TEXT = False
-STT_VAD_FORCE_ENDPOINT = True
+STT_VAD_FORCE_ENDPOINT = False
 STT_LANGUAGE = "en"
 
 # LLM Configuration (Groq)
@@ -611,6 +612,10 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=PipelineParams(
                 enable_metrics=True,
                 enable_usage_metrics=True,
+                allow_interruptions=True,
+                interruption_strategies=[
+                    MinWordsInterruptionStrategy(min_words=3)
+                ]
             ),
         )
 
