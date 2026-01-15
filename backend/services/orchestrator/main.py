@@ -1384,6 +1384,238 @@ async def get_celery_logs(lines: int = 200):
 
 
 # ==============================================================================
+# METRICS ENDPOINTS
+# ==============================================================================
+
+class AgentSpawnMetrics(BaseModel):
+    """Response model for agent spawn metrics"""
+    total_spawns: int = 0
+    successful_spawns: int = 0
+    failed_spawns: int = 0
+    success_rate: float = 0.0
+    average_startup_time_ms: float = 0.0
+    average_alive_signal_time_ms: float = 0.0
+    cold_starts: int = 0
+    total_retries: int = 0
+    timeout_failures: int = 0
+    recent_failures: list = []
+
+
+@app.get("/api/metrics/agent-spawn", response_model=AgentSpawnMetrics)
+async def get_agent_spawn_metrics():
+    """
+    Get agent spawn metrics for monitoring and debugging.
+
+    These metrics are tracked by the AgentMetrics class in the worker tasks
+    and stored in Redis. Useful for understanding:
+    - How long agents take to start
+    - How often spawning fails
+    - Whether cold starts are causing delays
+
+    Returns:
+        AgentSpawnMetrics with spawn statistics
+    """
+    try:
+        logger.info("metrics_agent_spawn_requested")
+
+        # Get metrics from Redis (stored by worker tasks)
+        metrics_key = "metrics:agent_spawn"
+        metrics_data = redis_client.hgetall(metrics_key)
+
+        if not metrics_data:
+            logger.info("metrics_agent_spawn_no_data")
+            return AgentSpawnMetrics()
+
+        # Decode bytes if needed
+        if metrics_data and isinstance(list(metrics_data.keys())[0], bytes):
+            metrics_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in metrics_data.items()
+            }
+
+        # Get recent failure details
+        recent_failures_key = "metrics:agent_spawn:recent_failures"
+        recent_failures_raw = redis_client.lrange(recent_failures_key, 0, 9)  # Last 10
+        recent_failures = []
+        for failure in recent_failures_raw:
+            try:
+                if isinstance(failure, bytes):
+                    failure = failure.decode()
+                recent_failures.append(json.loads(failure))
+            except (json.JSONDecodeError, Exception):
+                recent_failures.append({"raw": failure})
+
+        # Calculate success rate
+        total_spawns = int(metrics_data.get('total_spawns', 0))
+        successful_spawns = int(metrics_data.get('successful_spawns', 0))
+        success_rate = (successful_spawns / total_spawns * 100) if total_spawns > 0 else 0.0
+
+        result = AgentSpawnMetrics(
+            total_spawns=total_spawns,
+            successful_spawns=successful_spawns,
+            failed_spawns=int(metrics_data.get('failed_spawns', 0)),
+            success_rate=round(success_rate, 2),
+            average_startup_time_ms=float(metrics_data.get('average_startup_time_ms', 0)),
+            average_alive_signal_time_ms=float(metrics_data.get('average_alive_signal_time_ms', 0)),
+            cold_starts=int(metrics_data.get('cold_starts', 0)),
+            total_retries=int(metrics_data.get('total_retries', 0)),
+            timeout_failures=int(metrics_data.get('timeout_failures', 0)),
+            recent_failures=recent_failures
+        )
+
+        logger.info(f"metrics_agent_spawn_success total={total_spawns} success_rate={success_rate:.1f}%")
+        return result
+
+    except Exception as e:
+        logger.error(f"metrics_agent_spawn_failed error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get agent spawn metrics: {str(e)}"
+        )
+
+
+class SessionMetrics(BaseModel):
+    """Response model for session-specific metrics"""
+    session_id: str
+    spawn_started_at: Optional[str] = None
+    alive_signal_at: Optional[str] = None
+    connected_at: Optional[str] = None
+    spawn_duration_ms: Optional[float] = None
+    alive_signal_time_ms: Optional[float] = None
+    connection_time_ms: Optional[float] = None
+    is_cold_start: bool = False
+    retry_count: int = 0
+    current_status: str = "unknown"
+    agent_pid: Optional[int] = None
+    errors: list = []
+
+
+@app.get("/api/metrics/session/{session_id}", response_model=SessionMetrics)
+async def get_session_metrics(session_id: str):
+    """
+    Get detailed metrics for a specific session.
+
+    Useful for debugging why a specific session may have had delays or failures.
+
+    Args:
+        session_id: The session to get metrics for
+
+    Returns:
+        SessionMetrics with timing and status details
+    """
+    try:
+        logger.info(f"metrics_session_requested session_id={session_id}")
+
+        # Get session metrics from Redis
+        metrics_key = f"metrics:session:{session_id}"
+        metrics_data = redis_client.hgetall(metrics_key)
+
+        # Also get session data for status
+        session_key = f"session:{session_id}"
+        session_data = redis_client.hgetall(session_key)
+
+        # Decode bytes if needed
+        if metrics_data and isinstance(list(metrics_data.keys())[0], bytes):
+            metrics_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in metrics_data.items()
+            }
+
+        if session_data and isinstance(list(session_data.keys())[0], bytes):
+            session_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in session_data.items()
+            }
+
+        # Get agent PID
+        agent_pid = None
+        pid_str = session_data.get('agentPid') if session_data else None
+        if not pid_str:
+            pid_str = redis_client.get(f"agent:{session_id}:pid")
+        if pid_str:
+            try:
+                agent_pid = int(pid_str)
+            except ValueError:
+                pass
+
+        # Get errors from session logs
+        errors = []
+        logs_key = f"agent:{session_id}:logs"
+        logs = redis_client.lrange(logs_key, -20, -1)  # Last 20 log entries
+        for log_entry in logs:
+            try:
+                if isinstance(log_entry, bytes):
+                    log_entry = log_entry.decode()
+                log_obj = json.loads(log_entry)
+                if log_obj.get('level') in ['error', 'ERROR', 'warning', 'WARNING']:
+                    errors.append(log_obj)
+            except (json.JSONDecodeError, Exception):
+                if 'error' in str(log_entry).lower() or 'fail' in str(log_entry).lower():
+                    errors.append({"message": str(log_entry)})
+
+        result = SessionMetrics(
+            session_id=session_id,
+            spawn_started_at=metrics_data.get('spawn_started_at') if metrics_data else None,
+            alive_signal_at=metrics_data.get('alive_signal_at') if metrics_data else None,
+            connected_at=metrics_data.get('connected_at') if metrics_data else None,
+            spawn_duration_ms=float(metrics_data.get('spawn_duration_ms', 0)) if metrics_data else None,
+            alive_signal_time_ms=float(metrics_data.get('alive_signal_time_ms', 0)) if metrics_data else None,
+            connection_time_ms=float(metrics_data.get('connection_time_ms', 0)) if metrics_data else None,
+            is_cold_start=metrics_data.get('is_cold_start', 'false').lower() == 'true' if metrics_data else False,
+            retry_count=int(metrics_data.get('retry_count', 0)) if metrics_data else 0,
+            current_status=session_data.get('status', 'unknown') if session_data else 'not_found',
+            agent_pid=agent_pid,
+            errors=errors[-5:]  # Last 5 errors
+        )
+
+        logger.info(f"metrics_session_success session_id={session_id} status={result.current_status}")
+        return result
+
+    except Exception as e:
+        logger.error(f"metrics_session_failed session_id={session_id} error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get session metrics: {str(e)}"
+        )
+
+
+@app.post("/api/metrics/agent-spawn/reset")
+async def reset_agent_spawn_metrics():
+    """
+    Reset agent spawn metrics (admin only).
+
+    Clears all accumulated metrics. Useful for starting fresh after deploying fixes.
+
+    Returns:
+        Success message
+    """
+    try:
+        logger.warning("metrics_agent_spawn_reset_requested")
+
+        # Delete metrics keys
+        keys_to_delete = [
+            "metrics:agent_spawn",
+            "metrics:agent_spawn:recent_failures"
+        ]
+
+        for key in keys_to_delete:
+            redis_client.delete(key)
+
+        logger.info("metrics_agent_spawn_reset_success")
+        return {"success": True, "message": "Agent spawn metrics reset"}
+
+    except Exception as e:
+        logger.error(f"metrics_agent_spawn_reset_failed error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset metrics: {str(e)}"
+        )
+
+
+# ==============================================================================
 # HEALTH CHECK
 # ==============================================================================
 

@@ -51,6 +51,16 @@ from pipecat.services.groq.llm import GroqLLMService
 # from pipecat.services.cerebras.llm import CerebrasLLMService  # Temporarily disabled
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
+# =============================================================================
+# PRODUCTION FIX #3: AGENT_ALIVE signal
+# =============================================================================
+# This signal tells Celery that imports completed and the agent process is alive.
+# Must be printed AFTER all imports complete but BEFORE any slow operations.
+# This enables faster failure detection for crashed vs slow agents.
+print("AGENT_ALIVE", flush=True)
+sys.stdout.flush()
+# =============================================================================
+
 load_dotenv(override=True)
 
 # Setup logging
@@ -239,7 +249,7 @@ Speaking style:
 - Keep responses short and conversational (1-2 sentences max)
 - Only answer what is specifically asked
 - Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
-- Do NOT routinely repeat the speaker’s statements. If you understand, simply respond as a person naturally would—concise, genuine, and context-appropriate
+- Do NOT routinely repeat the speaker's statements. If you understand, simply respond as a person naturally would—concise, genuine, and context-appropriate
 - Speak like a real person, not like you're describing a scene.
 - When answering yes/no questions, reply with the shortest natural response. Avoid repeating the full question in your answer
 - FINAL REMINDER: Only answer what is directly asked. Do not anticipate questions or provide related information unless specifically requested.
@@ -275,13 +285,101 @@ def log_timing(message: str):
         logger.debug(f"TIMING: {message}")
 
 
+# =============================================================================
+# PRODUCTION FIX #6: Frontend Status Updates
+# =============================================================================
+
+class AgentStatusReporter:
+    """
+    Sends agent status updates to frontend via LiveKit data channel.
+
+    This allows the frontend to show appropriate UI states like:
+    - "Connecting to voice agent..."
+    - "Voice agent ready"
+    - "Agent encountered an error"
+
+    Status messages are sent as JSON via LiveKit's data channel.
+    """
+
+    # Status constants
+    STATUS_INITIALIZING = "initializing"
+    STATUS_CONNECTING = "connecting"
+    STATUS_READY = "ready"
+    STATUS_ERROR = "error"
+    STATUS_DISCONNECTED = "disconnected"
+
+    def __init__(self, transport):
+        self.transport = transport
+        self._last_status = None
+        logger.info("AgentStatusReporter initialized")
+
+    async def send_status(self, status: str, message: str, details: dict = None):
+        """
+        Send status update to frontend.
+
+        Args:
+            status: One of the STATUS_* constants
+            message: Human-readable status message
+            details: Optional additional details
+        """
+        try:
+            data = {
+                "type": "agent_status",
+                "status": status,
+                "message": message,
+                "timestamp": time.time()
+            }
+            if details:
+                data["details"] = details
+
+            json_data = json.dumps(data)
+
+            # Fire and forget - don't block pipeline for status updates
+            asyncio.create_task(self._send_message(json_data))
+
+            self._last_status = status
+            logger.debug(f"status_update_sent status={status} message={message}")
+
+        except Exception as e:
+            logger.warning(f"status_update_failed status={status} error={str(e)}")
+
+    async def _send_message(self, data: str):
+        """Internal method to send message with error handling."""
+        try:
+            await self.transport.send_message(data)
+        except Exception as e:
+            logger.warning(f"send_message_failed error={str(e)}")
+
+    async def report_initializing(self, component: str = None):
+        """Report that agent is initializing."""
+        msg = f"Loading {component}..." if component else "Initializing voice agent..."
+        await self.send_status(self.STATUS_INITIALIZING, msg, {"component": component})
+
+    async def report_connecting(self):
+        """Report that agent is connecting to room."""
+        await self.send_status(self.STATUS_CONNECTING, "Connecting to voice room...")
+
+    async def report_ready(self):
+        """Report that agent is ready to converse."""
+        await self.send_status(self.STATUS_READY, "Voice agent ready")
+
+    async def report_error(self, error_message: str):
+        """Report an error occurred."""
+        await self.send_status(self.STATUS_ERROR, error_message)
+
+    async def report_disconnected(self, reason: str = None):
+        """Report that agent has disconnected."""
+        msg = f"Disconnected: {reason}" if reason else "Voice agent disconnected"
+        await self.send_status(self.STATUS_DISCONNECTED, msg)
+
+
 class TranscriptionReporter:
     """Helper to send transcription events to frontend for latency tracking"""
-    
+
     def __init__(self, transport):
         self.transport = transport
         logger.info("TranscriptionReporter initialized")
-    
+
     async def report_user_transcript(self, text: str, timestamp: float = None):
         """Send user transcription to frontend for latency tracking"""
         try:
@@ -300,7 +398,7 @@ class TranscriptionReporter:
             logger.debug(f"Sent user transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send user transcript: {e}")
-    
+
     async def report_assistant_transcript(self, text: str, timestamp: float = None):
         """Send assistant transcription to frontend (for full cycle tracking)"""
         try:
@@ -430,6 +528,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     transport = None
     redis_pool = None
     redis_tracker = None
+    status_reporter = None  # PRODUCTION FIX #6
 
     try:
         logger.info(f"voice_assistant_starting voice_id={voice_id}")
@@ -480,6 +579,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             ),
         )
         logger.info("livekit_transport_created")
+
+        # PRODUCTION FIX #6: Initialize status reporter
+        status_reporter = AgentStatusReporter(transport)
 
         # Create STT service (AssemblyAI only)
         stt_service_name = "unknown"
@@ -566,7 +668,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Create transcription reporter (will be initialized after connection)
         transcription_reporter = None
-        
+
         # Create transcript processor and storage
         transcript_processor = TranscriptProcessor()
         transcript_storage = TranscriptStorage(room_name)
@@ -577,7 +679,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         async def on_transcript_update(processor, transcript):
             """Capture transcript updates from Pipecat"""
             nonlocal transcription_reporter
-            
+
             if hasattr(transcript, 'messages'):
                 for message in transcript.messages:
                     role = getattr(message, 'role', 'unknown')
@@ -586,7 +688,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
                     # Store in transcript storage
                     transcript_storage.add_message(role, content, timestamp)
-                    
+
                     # Send transcripts to frontend if reporter is initialized
                     if transcription_reporter:
                         if role == 'user' and content:
@@ -629,6 +731,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 remaining = getattr(transport, 'participants', [])
                 if len(remaining) == 0:
                     logger.info("No participants remaining - ending session")
+                    # PRODUCTION FIX #6: Send disconnected status
+                    if status_reporter:
+                        await status_reporter.report_disconnected("User left the room")
                     if not cleanup_triggered:
                         cleanup_triggered = True
                         await task.cancel()
@@ -642,6 +747,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         async def on_disconnected(transport, *args):
             nonlocal cleanup_triggered
             logger.info("Disconnected from LiveKit room")
+            # PRODUCTION FIX #6: Send disconnected status
+            if status_reporter:
+                await status_reporter.report_disconnected("Connection lost")
             if not cleanup_triggered:
                 cleanup_triggered = True
                 await task.cancel()
@@ -651,9 +759,13 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             nonlocal transcription_reporter
 
             logger.info(f"participant_joined participant_id={participant_id}")
-            
+
             # Create transcription reporter after transport is connected
             transcription_reporter = TranscriptionReporter(transport)
+
+            # PRODUCTION FIX #6: Send ready status to frontend
+            if status_reporter:
+                await status_reporter.report_ready()
 
             # Track conversation start time (non-blocking, non-critical)
             await redis_tracker.track_conversation_start(room_name)
@@ -699,6 +811,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info("keyboard_interrupt_received")
     except Exception as e:
         logger.error(f"fatal_error: {e}", exc_info=True)
+        # PRODUCTION FIX #6: Send error status
+        if status_reporter:
+            await status_reporter.report_error(str(e))
         raise
     finally:
         logger.info(f"Cleanup initiated for session {room_name}")
