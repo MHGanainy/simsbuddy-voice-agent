@@ -1616,6 +1616,215 @@ async def reset_agent_spawn_metrics():
 
 
 # ==============================================================================
+# AGENT METRICS ENDPOINTS (Histogram + Prometheus Format)
+# ==============================================================================
+
+@app.get("/api/metrics/agent")
+async def get_agent_metrics():
+    """
+    Get agent startup performance metrics.
+
+    Returns:
+        JSON with metrics:
+        - agent_startup_duration_seconds: Histogram and stats
+        - agent_startup_timeout_count: Number of timeouts
+        - agent_retry_count: Number of retries
+        - worker_cold_start_count: Number of cold starts
+
+    Example response:
+    {
+        "agent_startup_duration_seconds": {
+            "histogram": {
+                "le_5": 10,
+                "le_10": 25,
+                "le_15": 45,
+                "le_20": 52,
+                "le_30": 58,
+                "le_45": 60,
+                "le_60": 61,
+                "le_90": 62,
+                "le_inf": 62
+            },
+            "sum": 892.5,
+            "count": 62,
+            "avg": 14.4
+        },
+        "agent_startup_timeout_count": 3,
+        "agent_retry_count": 5,
+        "worker_cold_start_count": 8
+    }
+    """
+    try:
+        metrics_prefix = "metrics:agent:"
+
+        # Get histogram buckets
+        histogram_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration_histogram")
+        histogram = {}
+        if histogram_raw:
+            histogram = {
+                k.decode() if isinstance(k, bytes) else k:
+                int(v.decode() if isinstance(v, bytes) else v)
+                for k, v in histogram_raw.items()
+            }
+
+        # Get duration stats
+        duration_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration")
+        duration_sum = 0.0
+        duration_count = 0
+        if duration_raw:
+            sum_val = duration_raw.get(b'sum') or duration_raw.get('sum', 0)
+            count_val = duration_raw.get(b'count') or duration_raw.get('count', 0)
+            duration_sum = float(sum_val.decode() if isinstance(sum_val, bytes) else sum_val)
+            duration_count = int(count_val.decode() if isinstance(count_val, bytes) else count_val)
+
+        # Get counters
+        timeout_count = redis_client.get(f"{metrics_prefix}startup_timeout_count")
+        retry_count = redis_client.get(f"{metrics_prefix}retry_count")
+        cold_start_count = redis_client.get(f"{metrics_prefix}cold_start_count")
+
+        return {
+            "agent_startup_duration_seconds": {
+                "histogram": histogram,
+                "sum": duration_sum,
+                "count": duration_count,
+                "avg": round(duration_sum / duration_count, 2) if duration_count > 0 else 0
+            },
+            "agent_startup_timeout_count": int(timeout_count or 0),
+            "agent_retry_count": int(retry_count or 0),
+            "worker_cold_start_count": int(cold_start_count or 0)
+        }
+
+    except Exception as e:
+        logger.error(f"metrics_endpoint_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve metrics: {str(e)}"
+        )
+
+
+@app.get("/api/metrics/agent/prometheus")
+async def get_agent_metrics_prometheus():
+    """
+    Get agent metrics in Prometheus exposition format.
+
+    Can be scraped by Prometheus directly.
+
+    Returns:
+        Plain text in Prometheus format
+    """
+    from fastapi.responses import PlainTextResponse
+
+    try:
+        metrics_prefix = "metrics:agent:"
+        lines = []
+
+        # Histogram metrics
+        lines.append("# HELP agent_startup_duration_seconds Histogram of agent startup times")
+        lines.append("# TYPE agent_startup_duration_seconds histogram")
+
+        histogram_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration_histogram")
+        if histogram_raw:
+            buckets = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180]
+            for bucket in buckets:
+                key = f"le_{bucket}".encode() if isinstance(list(histogram_raw.keys())[0], bytes) else f"le_{bucket}"
+                count = histogram_raw.get(key, 0)
+                if isinstance(count, bytes):
+                    count = count.decode()
+                lines.append(f'agent_startup_duration_seconds_bucket{{le="{bucket}"}} {count}')
+
+            # +Inf bucket
+            inf_key = b"le_inf" if isinstance(list(histogram_raw.keys())[0], bytes) else "le_inf"
+            inf_count = histogram_raw.get(inf_key, 0)
+            if isinstance(inf_count, bytes):
+                inf_count = inf_count.decode()
+            lines.append(f'agent_startup_duration_seconds_bucket{{le="+Inf"}} {inf_count}')
+
+        # Duration sum and count
+        duration_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration")
+        if duration_raw:
+            sum_val = duration_raw.get(b'sum') or duration_raw.get('sum', 0)
+            count_val = duration_raw.get(b'count') or duration_raw.get('count', 0)
+            if isinstance(sum_val, bytes):
+                sum_val = sum_val.decode()
+            if isinstance(count_val, bytes):
+                count_val = count_val.decode()
+            lines.append(f"agent_startup_duration_seconds_sum {sum_val}")
+            lines.append(f"agent_startup_duration_seconds_count {count_val}")
+
+        # Counter metrics
+        lines.append("")
+        lines.append("# HELP agent_startup_timeout_total Total number of agent startup timeouts")
+        lines.append("# TYPE agent_startup_timeout_total counter")
+        timeout_count = redis_client.get(f"{metrics_prefix}startup_timeout_count") or 0
+        lines.append(f"agent_startup_timeout_total {timeout_count}")
+
+        lines.append("")
+        lines.append("# HELP agent_retry_total Total number of agent spawn retries")
+        lines.append("# TYPE agent_retry_total counter")
+        retry_count = redis_client.get(f"{metrics_prefix}retry_count") or 0
+        lines.append(f"agent_retry_total {retry_count}")
+
+        lines.append("")
+        lines.append("# HELP worker_cold_start_total Total number of worker cold starts")
+        lines.append("# TYPE worker_cold_start_total counter")
+        cold_start_count = redis_client.get(f"{metrics_prefix}cold_start_count") or 0
+        lines.append(f"worker_cold_start_total {cold_start_count}")
+
+        return PlainTextResponse(
+            content="\n".join(lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
+
+    except Exception as e:
+        logger.error(f"prometheus_metrics_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate Prometheus metrics: {str(e)}"
+        )
+
+
+@app.delete("/api/metrics/agent/reset")
+async def reset_agent_metrics():
+    """
+    Reset all agent metrics (for testing/debugging).
+
+    WARNING: This clears all historical metrics data.
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        metrics_prefix = "metrics:agent:"
+
+        keys_to_delete = [
+            f"{metrics_prefix}startup_duration_histogram",
+            f"{metrics_prefix}startup_duration",
+            f"{metrics_prefix}startup_timeout_count",
+            f"{metrics_prefix}retry_count",
+            f"{metrics_prefix}cold_start_count"
+        ]
+
+        deleted = 0
+        for key in keys_to_delete:
+            deleted += redis_client.delete(key)
+
+        logger.info(f"metrics_reset deleted_keys={deleted}")
+
+        return {
+            "success": True,
+            "message": f"Reset {deleted} metric keys",
+            "keys_deleted": keys_to_delete
+        }
+
+    except Exception as e:
+        logger.error(f"metrics_reset_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset metrics: {str(e)}"
+        )
+
+
+# ==============================================================================
 # HEALTH CHECK
 # ==============================================================================
 
