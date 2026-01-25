@@ -188,6 +188,49 @@ class RedisTracker:
             logger.warning(f"redis_error_end session={session_id[:20]}... error={e}")
         return False
 
+    async def signal_cleanup_complete(self, session_id: str, transcript_saved: bool) -> bool:
+        """
+        Signal that agent cleanup is complete (transcript saved, ready for orchestrator).
+
+        This is a critical signal that tells the orchestrator it's safe to proceed.
+        The orchestrator waits for this signal before returning from cleanup_session.
+
+        Args:
+            session_id: Session/room identifier
+            transcript_saved: Whether transcript was successfully saved to database
+
+        Returns:
+            True if signal was sent successfully, False otherwise
+        """
+        if not self.pool:
+            logger.warning(f"redis_pool_unavailable_for_cleanup_signal session={session_id[:20]}...")
+            return False
+
+        try:
+            cleanup_key = f"session:{session_id}:cleanup_complete"
+            cleanup_data = {
+                'completed': 'true',
+                'transcript_saved': 'true' if transcript_saved else 'false',
+                'completed_at': str(int(time.time()))
+            }
+
+            # Set completion signal with 60 second TTL (orchestrator should read within seconds)
+            await self.pool.hset(cleanup_key, mapping=cleanup_data)
+            await self.pool.expire(cleanup_key, 60)
+
+            logger.info(
+                f"cleanup_complete_signal_sent session={session_id[:20]}... "
+                f"transcript_saved={transcript_saved}"
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"redis_timeout_cleanup_signal session={session_id[:20]}... timeout_after=2s")
+        except ConnectionError as e:
+            logger.warning(f"redis_connection_error_cleanup_signal session={session_id[:20]}... error={e}")
+        except Exception as e:
+            logger.warning(f"redis_error_cleanup_signal session={session_id[:20]}... error={e}")
+        return False
+
 
 # ==================== AGENT CONFIGURATION ====================
 
@@ -830,6 +873,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             await redis_tracker.track_conversation_end(room_name)
 
         # Save transcripts to database
+        transcript_saved = False
         if 'transcript_storage' in locals():
             if len(transcript_storage) == 0 and opening_line:
                 greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant."
@@ -838,13 +882,18 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             if len(transcript_storage) > 0:
                 try:
                     transcript_data = transcript_storage.get_transcript_data()
-                    success = await Database.save_transcript(room_name, transcript_data)
-                    if success:
+                    transcript_saved = await Database.save_transcript(room_name, transcript_data)
+                    if transcript_saved:
                         logger.info(f"Transcripts saved: {len(transcript_data)} messages")
                     else:
                         logger.error("Failed to save transcripts")
                 except Exception as e:
                     logger.error(f"Exception saving transcripts: {e}")
+
+        # Signal cleanup complete to orchestrator (CRITICAL: must happen after transcript save)
+        # This allows orchestrator to know it's safe to return from cleanup_session
+        if 'redis_tracker' in locals() and redis_tracker:
+            await redis_tracker.signal_cleanup_complete(room_name, transcript_saved)
 
         # Close database connection
         try:

@@ -219,6 +219,76 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
     return cleanup_result
 
 
+async def wait_for_agent_cleanup_complete(session_id: str, max_wait_seconds: float = 10.0, poll_interval: float = 0.5) -> Dict[str, Any]:
+    """
+    Wait for the agent to signal cleanup completion.
+
+    The agent sets a Redis key after saving transcripts to the database.
+    This function polls for that key to ensure we don't return before
+    the transcript is persisted.
+
+    Args:
+        session_id: Session to wait for
+        max_wait_seconds: Maximum time to wait (default 10s)
+        poll_interval: Time between polls (default 0.5s)
+
+    Returns:
+        dict with completion status and details
+    """
+    cleanup_key = f"session:{session_id}:cleanup_complete"
+    start_time = time.time()
+    attempts = 0
+
+    while (time.time() - start_time) < max_wait_seconds:
+        attempts += 1
+        try:
+            cleanup_data = redis_client.hgetall(cleanup_key)
+
+            if cleanup_data:
+                # Decode bytes if needed
+                if cleanup_data and isinstance(list(cleanup_data.keys())[0], bytes):
+                    cleanup_data = {
+                        k.decode() if isinstance(k, bytes) else k:
+                        v.decode() if isinstance(v, bytes) else v
+                        for k, v in cleanup_data.items()
+                    }
+
+                transcript_saved = cleanup_data.get('transcript_saved') == 'true'
+                logger.info(
+                    f"agent_cleanup_signal_received session_id={session_id} "
+                    f"transcript_saved={transcript_saved} attempts={attempts} "
+                    f"wait_time={time.time() - start_time:.2f}s"
+                )
+
+                # Clean up the signal key
+                redis_client.delete(cleanup_key)
+
+                return {
+                    "received": True,
+                    "transcript_saved": transcript_saved,
+                    "attempts": attempts,
+                    "wait_time": time.time() - start_time
+                }
+
+        except Exception as e:
+            logger.warning(f"agent_cleanup_signal_check_error session_id={session_id} error={str(e)}")
+
+        await asyncio.sleep(poll_interval)
+
+    logger.warning(
+        f"agent_cleanup_signal_timeout session_id={session_id} "
+        f"max_wait={max_wait_seconds}s attempts={attempts}"
+    )
+
+    return {
+        "received": False,
+        "transcript_saved": False,
+        "attempts": attempts,
+        "wait_time": max_wait_seconds,
+        "timeout": True
+    }
+
+
 async def cleanup_session(session_id: str) -> Dict[str, Any]:
     """
     Clean up session resources (async to avoid blocking API)
@@ -227,7 +297,8 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
     1. Get session data from Redis
     2. Revoke Celery task if exists
     3. Kill voice agent process (SIGTERM then SIGKILL)
-    4. Remove all Redis keys for this session
+    4. Wait for agent cleanup completion signal (transcript saved)
+    5. Remove all Redis keys for this session
 
     Args:
         session_id: Session to clean up
@@ -332,6 +403,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                 await asyncio.sleep(3)
 
                 # Check if agent self-terminated
+                agent_self_terminated = False
                 try:
                     os.kill(pid, 0)  # Check if process exists
                     logger.info(f"cleanup_agent_still_running_sending_sigterm session_id={session_id} pid={pid}")
@@ -339,32 +411,66 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                     logger.info(f"cleanup_agent_self_terminated session_id={session_id} pid={pid}")
                     cleanup_details["process_killed"] = True
                     cleanup_details["self_terminated"] = True
-                    # Agent already dead, skip SIGTERM
-                    return cleanup_details
+                    agent_self_terminated = True
 
-                logger.info(f"cleanup_killing_process session_id={session_id} pid={pid} pgid={pgid} is_group_leader={pgid == pid if pgid else 'unknown'} signal='SIGTERM'")
+                    # CRITICAL: Wait for agent cleanup completion signal
+                    # Agent may still be saving transcripts to database even though process appears dead
+                    cleanup_signal = await wait_for_agent_cleanup_complete(session_id, max_wait_seconds=10.0)
+                    cleanup_details["cleanup_signal"] = cleanup_signal
 
-                # Send SIGTERM to entire process group
-                try:
-                    os.killpg(pid, signal.SIGTERM)  # Kill entire process group
-                    cleanup_details["process_killed"] = True
-                    cleanup_details["pgid"] = pgid
+                    if cleanup_signal.get("received"):
+                        logger.info(
+                            f"cleanup_agent_signal_received session_id={session_id} "
+                            f"transcript_saved={cleanup_signal.get('transcript_saved')} "
+                            f"wait_time={cleanup_signal.get('wait_time', 0):.2f}s"
+                        )
+                    else:
+                        logger.warning(
+                            f"cleanup_agent_signal_timeout session_id={session_id} "
+                            f"waited={cleanup_signal.get('wait_time', 0):.2f}s "
+                            f"warning='Proceeding without confirmation'"
+                        )
 
-                    # Wait additional 5 seconds for graceful shutdown (async database operations)
-                    # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
-                    await asyncio.sleep(5)
+                # Only send SIGTERM if agent didn't self-terminate
+                if not agent_self_terminated:
+                    logger.info(f"cleanup_killing_process session_id={session_id} pid={pid} pgid={pgid} is_group_leader={pgid == pid if pgid else 'unknown'} signal='SIGTERM'")
 
-                    # Check if still alive, send SIGKILL
+                    # Send SIGTERM to entire process group
                     try:
-                        os.kill(pid, 0)  # Just check if exists
-                        logger.warning(f"cleanup_process_still_alive session_id={session_id} pid={pid} signal='SIGKILL'")
-                        os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
-                    except ProcessLookupError:
-                        logger.info(f"cleanup_process_terminated_gracefully session_id={session_id} pid={pid}")
+                        os.killpg(pid, signal.SIGTERM)  # Kill entire process group
+                        cleanup_details["process_killed"] = True
+                        cleanup_details["pgid"] = pgid
 
-                except ProcessLookupError:
-                    logger.info(f"cleanup_process_already_dead session_id={session_id} pid={pid}")
-                    cleanup_details["process_killed"] = True
+                        # Wait for agent cleanup completion signal (with SIGTERM case)
+                        # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
+                        cleanup_signal = await wait_for_agent_cleanup_complete(session_id, max_wait_seconds=10.0)
+                        cleanup_details["cleanup_signal"] = cleanup_signal
+
+                        if cleanup_signal.get("received"):
+                            logger.info(
+                                f"cleanup_agent_signal_received session_id={session_id} "
+                                f"transcript_saved={cleanup_signal.get('transcript_saved')} "
+                                f"wait_time={cleanup_signal.get('wait_time', 0):.2f}s"
+                            )
+                        else:
+                            # Signal not received, wait additional time as fallback
+                            logger.warning(
+                                f"cleanup_agent_signal_timeout session_id={session_id} "
+                                f"warning='Waiting additional 3s as fallback'"
+                            )
+                            await asyncio.sleep(3)
+
+                        # Check if still alive, send SIGKILL
+                        try:
+                            os.kill(pid, 0)  # Just check if exists
+                            logger.warning(f"cleanup_process_still_alive session_id={session_id} pid={pid} signal='SIGKILL'")
+                            os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
+                        except ProcessLookupError:
+                            logger.info(f"cleanup_process_terminated_gracefully session_id={session_id} pid={pid}")
+
+                    except ProcessLookupError:
+                        logger.info(f"cleanup_process_already_dead session_id={session_id} pid={pid}")
+                        cleanup_details["process_killed"] = True
 
             except Exception as e:
                 error_msg = f"Failed to kill process {pid_str}: {e}"
