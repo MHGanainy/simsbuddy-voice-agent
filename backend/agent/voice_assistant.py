@@ -240,7 +240,7 @@ PARTICIPANT_GREETING_DELAY = 0.2
 
 # Context Aggregator Settings
 AGGREGATION_TIMEOUT = 0.1
-BOT_INTERRUPTION_TIMEOUT = 0.35
+BOT_INTERRUPTION_TIMEOUT = 0.1
 
 # TTS Configuration (Inworld)
 TTS_STREAMING = True
@@ -617,7 +617,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=LiveKitParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.35)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
                 # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
