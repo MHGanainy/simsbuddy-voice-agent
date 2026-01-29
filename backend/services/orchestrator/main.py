@@ -219,6 +219,76 @@ async def terminate_session_insufficient_credits(session_id: str) -> Dict[str, A
     return cleanup_result
 
 
+async def wait_for_agent_cleanup_complete(session_id: str, max_wait_seconds: float = 10.0, poll_interval: float = 0.5) -> Dict[str, Any]:
+    """
+    Wait for the agent to signal cleanup completion.
+
+    The agent sets a Redis key after saving transcripts to the database.
+    This function polls for that key to ensure we don't return before
+    the transcript is persisted.
+
+    Args:
+        session_id: Session to wait for
+        max_wait_seconds: Maximum time to wait (default 10s)
+        poll_interval: Time between polls (default 0.5s)
+
+    Returns:
+        dict with completion status and details
+    """
+    cleanup_key = f"session:{session_id}:cleanup_complete"
+    start_time = time.time()
+    attempts = 0
+
+    while (time.time() - start_time) < max_wait_seconds:
+        attempts += 1
+        try:
+            cleanup_data = redis_client.hgetall(cleanup_key)
+
+            if cleanup_data:
+                # Decode bytes if needed
+                if cleanup_data and isinstance(list(cleanup_data.keys())[0], bytes):
+                    cleanup_data = {
+                        k.decode() if isinstance(k, bytes) else k:
+                        v.decode() if isinstance(v, bytes) else v
+                        for k, v in cleanup_data.items()
+                    }
+
+                transcript_saved = cleanup_data.get('transcript_saved') == 'true'
+                logger.info(
+                    f"agent_cleanup_signal_received session_id={session_id} "
+                    f"transcript_saved={transcript_saved} attempts={attempts} "
+                    f"wait_time={time.time() - start_time:.2f}s"
+                )
+
+                # Clean up the signal key
+                redis_client.delete(cleanup_key)
+
+                return {
+                    "received": True,
+                    "transcript_saved": transcript_saved,
+                    "attempts": attempts,
+                    "wait_time": time.time() - start_time
+                }
+
+        except Exception as e:
+            logger.warning(f"agent_cleanup_signal_check_error session_id={session_id} error={str(e)}")
+
+        await asyncio.sleep(poll_interval)
+
+    logger.warning(
+        f"agent_cleanup_signal_timeout session_id={session_id} "
+        f"max_wait={max_wait_seconds}s attempts={attempts}"
+    )
+
+    return {
+        "received": False,
+        "transcript_saved": False,
+        "attempts": attempts,
+        "wait_time": max_wait_seconds,
+        "timeout": True
+    }
+
+
 async def cleanup_session(session_id: str) -> Dict[str, Any]:
     """
     Clean up session resources (async to avoid blocking API)
@@ -227,7 +297,8 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
     1. Get session data from Redis
     2. Revoke Celery task if exists
     3. Kill voice agent process (SIGTERM then SIGKILL)
-    4. Remove all Redis keys for this session
+    4. Wait for agent cleanup completion signal (transcript saved)
+    5. Remove all Redis keys for this session
 
     Args:
         session_id: Session to clean up
@@ -332,6 +403,7 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                 await asyncio.sleep(3)
 
                 # Check if agent self-terminated
+                agent_self_terminated = False
                 try:
                     os.kill(pid, 0)  # Check if process exists
                     logger.info(f"cleanup_agent_still_running_sending_sigterm session_id={session_id} pid={pid}")
@@ -339,32 +411,66 @@ async def cleanup_session(session_id: str) -> Dict[str, Any]:
                     logger.info(f"cleanup_agent_self_terminated session_id={session_id} pid={pid}")
                     cleanup_details["process_killed"] = True
                     cleanup_details["self_terminated"] = True
-                    # Agent already dead, skip SIGTERM
-                    return cleanup_details
+                    agent_self_terminated = True
 
-                logger.info(f"cleanup_killing_process session_id={session_id} pid={pid} pgid={pgid} is_group_leader={pgid == pid if pgid else 'unknown'} signal='SIGTERM'")
+                    # CRITICAL: Wait for agent cleanup completion signal
+                    # Agent may still be saving transcripts to database even though process appears dead
+                    cleanup_signal = await wait_for_agent_cleanup_complete(session_id, max_wait_seconds=10.0)
+                    cleanup_details["cleanup_signal"] = cleanup_signal
 
-                # Send SIGTERM to entire process group
-                try:
-                    os.killpg(pid, signal.SIGTERM)  # Kill entire process group
-                    cleanup_details["process_killed"] = True
-                    cleanup_details["pgid"] = pgid
+                    if cleanup_signal.get("received"):
+                        logger.info(
+                            f"cleanup_agent_signal_received session_id={session_id} "
+                            f"transcript_saved={cleanup_signal.get('transcript_saved')} "
+                            f"wait_time={cleanup_signal.get('wait_time', 0):.2f}s"
+                        )
+                    else:
+                        logger.warning(
+                            f"cleanup_agent_signal_timeout session_id={session_id} "
+                            f"waited={cleanup_signal.get('wait_time', 0):.2f}s "
+                            f"warning='Proceeding without confirmation'"
+                        )
 
-                    # Wait additional 5 seconds for graceful shutdown (async database operations)
-                    # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
-                    await asyncio.sleep(5)
+                # Only send SIGTERM if agent didn't self-terminate
+                if not agent_self_terminated:
+                    logger.info(f"cleanup_killing_process session_id={session_id} pid={pid} pgid={pgid} is_group_leader={pgid == pid if pgid else 'unknown'} signal='SIGTERM'")
 
-                    # Check if still alive, send SIGKILL
+                    # Send SIGTERM to entire process group
                     try:
-                        os.kill(pid, 0)  # Just check if exists
-                        logger.warning(f"cleanup_process_still_alive session_id={session_id} pid={pid} signal='SIGKILL'")
-                        os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
-                    except ProcessLookupError:
-                        logger.info(f"cleanup_process_terminated_gracefully session_id={session_id} pid={pid}")
+                        os.killpg(pid, signal.SIGTERM)  # Kill entire process group
+                        cleanup_details["process_killed"] = True
+                        cleanup_details["pgid"] = pgid
 
-                except ProcessLookupError:
-                    logger.info(f"cleanup_process_already_dead session_id={session_id} pid={pid}")
-                    cleanup_details["process_killed"] = True
+                        # Wait for agent cleanup completion signal (with SIGTERM case)
+                        # Agent needs time to: cancel pipeline, save transcripts to DB, close connections
+                        cleanup_signal = await wait_for_agent_cleanup_complete(session_id, max_wait_seconds=10.0)
+                        cleanup_details["cleanup_signal"] = cleanup_signal
+
+                        if cleanup_signal.get("received"):
+                            logger.info(
+                                f"cleanup_agent_signal_received session_id={session_id} "
+                                f"transcript_saved={cleanup_signal.get('transcript_saved')} "
+                                f"wait_time={cleanup_signal.get('wait_time', 0):.2f}s"
+                            )
+                        else:
+                            # Signal not received, wait additional time as fallback
+                            logger.warning(
+                                f"cleanup_agent_signal_timeout session_id={session_id} "
+                                f"warning='Waiting additional 3s as fallback'"
+                            )
+                            await asyncio.sleep(3)
+
+                        # Check if still alive, send SIGKILL
+                        try:
+                            os.kill(pid, 0)  # Just check if exists
+                            logger.warning(f"cleanup_process_still_alive session_id={session_id} pid={pid} signal='SIGKILL'")
+                            os.killpg(pid, signal.SIGKILL)  # Force kill entire process group
+                        except ProcessLookupError:
+                            logger.info(f"cleanup_process_terminated_gracefully session_id={session_id} pid={pid}")
+
+                    except ProcessLookupError:
+                        logger.info(f"cleanup_process_already_dead session_id={session_id} pid={pid}")
+                        cleanup_details["process_killed"] = True
 
             except Exception as e:
                 error_msg = f"Failed to kill process {pid_str}: {e}"
@@ -1380,6 +1486,447 @@ async def get_celery_logs(lines: int = 200):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get Celery logs: {str(e)}"
+        )
+
+
+# ==============================================================================
+# METRICS ENDPOINTS
+# ==============================================================================
+
+class AgentSpawnMetrics(BaseModel):
+    """Response model for agent spawn metrics"""
+    total_spawns: int = 0
+    successful_spawns: int = 0
+    failed_spawns: int = 0
+    success_rate: float = 0.0
+    average_startup_time_ms: float = 0.0
+    average_alive_signal_time_ms: float = 0.0
+    cold_starts: int = 0
+    total_retries: int = 0
+    timeout_failures: int = 0
+    recent_failures: list = []
+
+
+@app.get("/api/metrics/agent-spawn", response_model=AgentSpawnMetrics)
+async def get_agent_spawn_metrics():
+    """
+    Get agent spawn metrics for monitoring and debugging.
+
+    These metrics are tracked by the AgentMetrics class in the worker tasks
+    and stored in Redis. Useful for understanding:
+    - How long agents take to start
+    - How often spawning fails
+    - Whether cold starts are causing delays
+
+    Returns:
+        AgentSpawnMetrics with spawn statistics
+    """
+    try:
+        logger.info("metrics_agent_spawn_requested")
+
+        # Get metrics from Redis (stored by worker tasks)
+        metrics_key = "metrics:agent_spawn"
+        metrics_data = redis_client.hgetall(metrics_key)
+
+        if not metrics_data:
+            logger.info("metrics_agent_spawn_no_data")
+            return AgentSpawnMetrics()
+
+        # Decode bytes if needed
+        if metrics_data and isinstance(list(metrics_data.keys())[0], bytes):
+            metrics_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in metrics_data.items()
+            }
+
+        # Get recent failure details
+        recent_failures_key = "metrics:agent_spawn:recent_failures"
+        recent_failures_raw = redis_client.lrange(recent_failures_key, 0, 9)  # Last 10
+        recent_failures = []
+        for failure in recent_failures_raw:
+            try:
+                if isinstance(failure, bytes):
+                    failure = failure.decode()
+                recent_failures.append(json.loads(failure))
+            except (json.JSONDecodeError, Exception):
+                recent_failures.append({"raw": failure})
+
+        # Calculate success rate
+        total_spawns = int(metrics_data.get('total_spawns', 0))
+        successful_spawns = int(metrics_data.get('successful_spawns', 0))
+        success_rate = (successful_spawns / total_spawns * 100) if total_spawns > 0 else 0.0
+
+        result = AgentSpawnMetrics(
+            total_spawns=total_spawns,
+            successful_spawns=successful_spawns,
+            failed_spawns=int(metrics_data.get('failed_spawns', 0)),
+            success_rate=round(success_rate, 2),
+            average_startup_time_ms=float(metrics_data.get('average_startup_time_ms', 0)),
+            average_alive_signal_time_ms=float(metrics_data.get('average_alive_signal_time_ms', 0)),
+            cold_starts=int(metrics_data.get('cold_starts', 0)),
+            total_retries=int(metrics_data.get('total_retries', 0)),
+            timeout_failures=int(metrics_data.get('timeout_failures', 0)),
+            recent_failures=recent_failures
+        )
+
+        logger.info(f"metrics_agent_spawn_success total={total_spawns} success_rate={success_rate:.1f}%")
+        return result
+
+    except Exception as e:
+        logger.error(f"metrics_agent_spawn_failed error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get agent spawn metrics: {str(e)}"
+        )
+
+
+class SessionMetrics(BaseModel):
+    """Response model for session-specific metrics"""
+    session_id: str
+    spawn_started_at: Optional[str] = None
+    alive_signal_at: Optional[str] = None
+    connected_at: Optional[str] = None
+    spawn_duration_ms: Optional[float] = None
+    alive_signal_time_ms: Optional[float] = None
+    connection_time_ms: Optional[float] = None
+    is_cold_start: bool = False
+    retry_count: int = 0
+    current_status: str = "unknown"
+    agent_pid: Optional[int] = None
+    errors: list = []
+
+
+@app.get("/api/metrics/session/{session_id}", response_model=SessionMetrics)
+async def get_session_metrics(session_id: str):
+    """
+    Get detailed metrics for a specific session.
+
+    Useful for debugging why a specific session may have had delays or failures.
+
+    Args:
+        session_id: The session to get metrics for
+
+    Returns:
+        SessionMetrics with timing and status details
+    """
+    try:
+        logger.info(f"metrics_session_requested session_id={session_id}")
+
+        # Get session metrics from Redis
+        metrics_key = f"metrics:session:{session_id}"
+        metrics_data = redis_client.hgetall(metrics_key)
+
+        # Also get session data for status
+        session_key = f"session:{session_id}"
+        session_data = redis_client.hgetall(session_key)
+
+        # Decode bytes if needed
+        if metrics_data and isinstance(list(metrics_data.keys())[0], bytes):
+            metrics_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in metrics_data.items()
+            }
+
+        if session_data and isinstance(list(session_data.keys())[0], bytes):
+            session_data = {
+                k.decode() if isinstance(k, bytes) else k:
+                v.decode() if isinstance(v, bytes) else v
+                for k, v in session_data.items()
+            }
+
+        # Get agent PID
+        agent_pid = None
+        pid_str = session_data.get('agentPid') if session_data else None
+        if not pid_str:
+            pid_str = redis_client.get(f"agent:{session_id}:pid")
+        if pid_str:
+            try:
+                agent_pid = int(pid_str)
+            except ValueError:
+                pass
+
+        # Get errors from session logs
+        errors = []
+        logs_key = f"agent:{session_id}:logs"
+        logs = redis_client.lrange(logs_key, -20, -1)  # Last 20 log entries
+        for log_entry in logs:
+            try:
+                if isinstance(log_entry, bytes):
+                    log_entry = log_entry.decode()
+                log_obj = json.loads(log_entry)
+                if log_obj.get('level') in ['error', 'ERROR', 'warning', 'WARNING']:
+                    errors.append(log_obj)
+            except (json.JSONDecodeError, Exception):
+                if 'error' in str(log_entry).lower() or 'fail' in str(log_entry).lower():
+                    errors.append({"message": str(log_entry)})
+
+        result = SessionMetrics(
+            session_id=session_id,
+            spawn_started_at=metrics_data.get('spawn_started_at') if metrics_data else None,
+            alive_signal_at=metrics_data.get('alive_signal_at') if metrics_data else None,
+            connected_at=metrics_data.get('connected_at') if metrics_data else None,
+            spawn_duration_ms=float(metrics_data.get('spawn_duration_ms', 0)) if metrics_data else None,
+            alive_signal_time_ms=float(metrics_data.get('alive_signal_time_ms', 0)) if metrics_data else None,
+            connection_time_ms=float(metrics_data.get('connection_time_ms', 0)) if metrics_data else None,
+            is_cold_start=metrics_data.get('is_cold_start', 'false').lower() == 'true' if metrics_data else False,
+            retry_count=int(metrics_data.get('retry_count', 0)) if metrics_data else 0,
+            current_status=session_data.get('status', 'unknown') if session_data else 'not_found',
+            agent_pid=agent_pid,
+            errors=errors[-5:]  # Last 5 errors
+        )
+
+        logger.info(f"metrics_session_success session_id={session_id} status={result.current_status}")
+        return result
+
+    except Exception as e:
+        logger.error(f"metrics_session_failed session_id={session_id} error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get session metrics: {str(e)}"
+        )
+
+
+@app.post("/api/metrics/agent-spawn/reset")
+async def reset_agent_spawn_metrics():
+    """
+    Reset agent spawn metrics (admin only).
+
+    Clears all accumulated metrics. Useful for starting fresh after deploying fixes.
+
+    Returns:
+        Success message
+    """
+    try:
+        logger.warning("metrics_agent_spawn_reset_requested")
+
+        # Delete metrics keys
+        keys_to_delete = [
+            "metrics:agent_spawn",
+            "metrics:agent_spawn:recent_failures"
+        ]
+
+        for key in keys_to_delete:
+            redis_client.delete(key)
+
+        logger.info("metrics_agent_spawn_reset_success")
+        return {"success": True, "message": "Agent spawn metrics reset"}
+
+    except Exception as e:
+        logger.error(f"metrics_agent_spawn_reset_failed error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset metrics: {str(e)}"
+        )
+
+
+# ==============================================================================
+# AGENT METRICS ENDPOINTS (Histogram + Prometheus Format)
+# ==============================================================================
+
+@app.get("/api/metrics/agent")
+async def get_agent_metrics():
+    """
+    Get agent startup performance metrics.
+
+    Returns:
+        JSON with metrics:
+        - agent_startup_duration_seconds: Histogram and stats
+        - agent_startup_timeout_count: Number of timeouts
+        - agent_retry_count: Number of retries
+        - worker_cold_start_count: Number of cold starts
+
+    Example response:
+    {
+        "agent_startup_duration_seconds": {
+            "histogram": {
+                "le_5": 10,
+                "le_10": 25,
+                "le_15": 45,
+                "le_20": 52,
+                "le_30": 58,
+                "le_45": 60,
+                "le_60": 61,
+                "le_90": 62,
+                "le_inf": 62
+            },
+            "sum": 892.5,
+            "count": 62,
+            "avg": 14.4
+        },
+        "agent_startup_timeout_count": 3,
+        "agent_retry_count": 5,
+        "worker_cold_start_count": 8
+    }
+    """
+    try:
+        metrics_prefix = "metrics:agent:"
+
+        # Get histogram buckets
+        histogram_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration_histogram")
+        histogram = {}
+        if histogram_raw:
+            histogram = {
+                k.decode() if isinstance(k, bytes) else k:
+                int(v.decode() if isinstance(v, bytes) else v)
+                for k, v in histogram_raw.items()
+            }
+
+        # Get duration stats
+        duration_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration")
+        duration_sum = 0.0
+        duration_count = 0
+        if duration_raw:
+            sum_val = duration_raw.get(b'sum') or duration_raw.get('sum', 0)
+            count_val = duration_raw.get(b'count') or duration_raw.get('count', 0)
+            duration_sum = float(sum_val.decode() if isinstance(sum_val, bytes) else sum_val)
+            duration_count = int(count_val.decode() if isinstance(count_val, bytes) else count_val)
+
+        # Get counters
+        timeout_count = redis_client.get(f"{metrics_prefix}startup_timeout_count")
+        retry_count = redis_client.get(f"{metrics_prefix}retry_count")
+        cold_start_count = redis_client.get(f"{metrics_prefix}cold_start_count")
+
+        return {
+            "agent_startup_duration_seconds": {
+                "histogram": histogram,
+                "sum": duration_sum,
+                "count": duration_count,
+                "avg": round(duration_sum / duration_count, 2) if duration_count > 0 else 0
+            },
+            "agent_startup_timeout_count": int(timeout_count or 0),
+            "agent_retry_count": int(retry_count or 0),
+            "worker_cold_start_count": int(cold_start_count or 0)
+        }
+
+    except Exception as e:
+        logger.error(f"metrics_endpoint_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve metrics: {str(e)}"
+        )
+
+
+@app.get("/api/metrics/agent/prometheus")
+async def get_agent_metrics_prometheus():
+    """
+    Get agent metrics in Prometheus exposition format.
+
+    Can be scraped by Prometheus directly.
+
+    Returns:
+        Plain text in Prometheus format
+    """
+    from fastapi.responses import PlainTextResponse
+
+    try:
+        metrics_prefix = "metrics:agent:"
+        lines = []
+
+        # Histogram metrics
+        lines.append("# HELP agent_startup_duration_seconds Histogram of agent startup times")
+        lines.append("# TYPE agent_startup_duration_seconds histogram")
+
+        histogram_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration_histogram")
+        if histogram_raw:
+            buckets = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180]
+            for bucket in buckets:
+                key = f"le_{bucket}".encode() if isinstance(list(histogram_raw.keys())[0], bytes) else f"le_{bucket}"
+                count = histogram_raw.get(key, 0)
+                if isinstance(count, bytes):
+                    count = count.decode()
+                lines.append(f'agent_startup_duration_seconds_bucket{{le="{bucket}"}} {count}')
+
+            # +Inf bucket
+            inf_key = b"le_inf" if isinstance(list(histogram_raw.keys())[0], bytes) else "le_inf"
+            inf_count = histogram_raw.get(inf_key, 0)
+            if isinstance(inf_count, bytes):
+                inf_count = inf_count.decode()
+            lines.append(f'agent_startup_duration_seconds_bucket{{le="+Inf"}} {inf_count}')
+
+        # Duration sum and count
+        duration_raw = redis_client.hgetall(f"{metrics_prefix}startup_duration")
+        if duration_raw:
+            sum_val = duration_raw.get(b'sum') or duration_raw.get('sum', 0)
+            count_val = duration_raw.get(b'count') or duration_raw.get('count', 0)
+            if isinstance(sum_val, bytes):
+                sum_val = sum_val.decode()
+            if isinstance(count_val, bytes):
+                count_val = count_val.decode()
+            lines.append(f"agent_startup_duration_seconds_sum {sum_val}")
+            lines.append(f"agent_startup_duration_seconds_count {count_val}")
+
+        # Counter metrics
+        lines.append("")
+        lines.append("# HELP agent_startup_timeout_total Total number of agent startup timeouts")
+        lines.append("# TYPE agent_startup_timeout_total counter")
+        timeout_count = redis_client.get(f"{metrics_prefix}startup_timeout_count") or 0
+        lines.append(f"agent_startup_timeout_total {timeout_count}")
+
+        lines.append("")
+        lines.append("# HELP agent_retry_total Total number of agent spawn retries")
+        lines.append("# TYPE agent_retry_total counter")
+        retry_count = redis_client.get(f"{metrics_prefix}retry_count") or 0
+        lines.append(f"agent_retry_total {retry_count}")
+
+        lines.append("")
+        lines.append("# HELP worker_cold_start_total Total number of worker cold starts")
+        lines.append("# TYPE worker_cold_start_total counter")
+        cold_start_count = redis_client.get(f"{metrics_prefix}cold_start_count") or 0
+        lines.append(f"worker_cold_start_total {cold_start_count}")
+
+        return PlainTextResponse(
+            content="\n".join(lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
+
+    except Exception as e:
+        logger.error(f"prometheus_metrics_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate Prometheus metrics: {str(e)}"
+        )
+
+
+@app.delete("/api/metrics/agent/reset")
+async def reset_agent_metrics():
+    """
+    Reset all agent metrics (for testing/debugging).
+
+    WARNING: This clears all historical metrics data.
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        metrics_prefix = "metrics:agent:"
+
+        keys_to_delete = [
+            f"{metrics_prefix}startup_duration_histogram",
+            f"{metrics_prefix}startup_duration",
+            f"{metrics_prefix}startup_timeout_count",
+            f"{metrics_prefix}retry_count",
+            f"{metrics_prefix}cold_start_count"
+        ]
+
+        deleted = 0
+        for key in keys_to_delete:
+            deleted += redis_client.delete(key)
+
+        logger.info(f"metrics_reset deleted_keys={deleted}")
+
+        return {
+            "success": True,
+            "message": f"Reset {deleted} metric keys",
+            "keys_deleted": keys_to_delete
+        }
+
+    except Exception as e:
+        logger.error(f"metrics_reset_error error={str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset metrics: {str(e)}"
         )
 
 

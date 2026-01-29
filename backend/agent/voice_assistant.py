@@ -51,6 +51,16 @@ from pipecat.services.groq.llm import GroqLLMService
 # from pipecat.services.cerebras.llm import CerebrasLLMService  # Temporarily disabled
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
+# =============================================================================
+# PRODUCTION FIX #3: AGENT_ALIVE signal
+# =============================================================================
+# This signal tells Celery that imports completed and the agent process is alive.
+# Must be printed AFTER all imports complete but BEFORE any slow operations.
+# This enables faster failure detection for crashed vs slow agents.
+print("AGENT_ALIVE", flush=True)
+sys.stdout.flush()
+# =============================================================================
+
 load_dotenv(override=True)
 
 # Setup logging
@@ -178,6 +188,49 @@ class RedisTracker:
             logger.warning(f"redis_error_end session={session_id[:20]}... error={e}")
         return False
 
+    async def signal_cleanup_complete(self, session_id: str, transcript_saved: bool) -> bool:
+        """
+        Signal that agent cleanup is complete (transcript saved, ready for orchestrator).
+
+        This is a critical signal that tells the orchestrator it's safe to proceed.
+        The orchestrator waits for this signal before returning from cleanup_session.
+
+        Args:
+            session_id: Session/room identifier
+            transcript_saved: Whether transcript was successfully saved to database
+
+        Returns:
+            True if signal was sent successfully, False otherwise
+        """
+        if not self.pool:
+            logger.warning(f"redis_pool_unavailable_for_cleanup_signal session={session_id[:20]}...")
+            return False
+
+        try:
+            cleanup_key = f"session:{session_id}:cleanup_complete"
+            cleanup_data = {
+                'completed': 'true',
+                'transcript_saved': 'true' if transcript_saved else 'false',
+                'completed_at': str(int(time.time()))
+            }
+
+            # Set completion signal with 60 second TTL (orchestrator should read within seconds)
+            await self.pool.hset(cleanup_key, mapping=cleanup_data)
+            await self.pool.expire(cleanup_key, 60)
+
+            logger.info(
+                f"cleanup_complete_signal_sent session={session_id[:20]}... "
+                f"transcript_saved={transcript_saved}"
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"redis_timeout_cleanup_signal session={session_id[:20]}... timeout_after=2s")
+        except ConnectionError as e:
+            logger.warning(f"redis_connection_error_cleanup_signal session={session_id[:20]}... error={e}")
+        except Exception as e:
+            logger.warning(f"redis_error_cleanup_signal session={session_id[:20]}... error={e}")
+        return False
+
 
 # ==================== AGENT CONFIGURATION ====================
 
@@ -187,7 +240,7 @@ PARTICIPANT_GREETING_DELAY = 0.2
 
 # Context Aggregator Settings
 AGGREGATION_TIMEOUT = 0.1
-BOT_INTERRUPTION_TIMEOUT = 0.35
+BOT_INTERRUPTION_TIMEOUT = 0.1
 
 # TTS Configuration (Inworld)
 TTS_STREAMING = True
@@ -222,27 +275,61 @@ STT_LANGUAGE = "en"
 LLM_MODEL = "llama-3.3-70b-versatile"
 LLM_STREAM = True
 LLM_MAX_TOKENS = 100
-LLM_TEMPERATURE = 0.2
+LLM_TEMPERATURE = 0.1
 
 # Critical Rules (appended to all system prompts)
 CRITICAL_RULES = """
-CRITICAL RULES:
-This roleplay is part of an exam. Follow these rules strictly:
-You are roleplaying. Everything you write will be spoken aloud by a text-to-speech system, so follow these rules strictly:
-Keep answers short and only answer when asked about a specific point; do not provide unrequested information even if you feel it is related(For example: do you smoke? answer yer or not and do not volunter to mention alcohol unless you are asked about it)
-If you are being asked an open question and you should not give open answer, ask such as what to get a direct question.
-NEVER include:
-- Stage directions like "looks anxious," "appears worried," "seems uncomfortable"
-- Actions in asterisks like *sighs*, *pauses*, *fidgets* or in Brackets
-- Any descriptive text about body language or appearance
-Speaking style:
+<role>Simulated role player in a formal exam. Responses spoken via TTS.</role>
+
+<tts_output>
+Everything written is read aloud exactly - no filtering.
+- NO stage directions, asterisks (*sighs*), brackets, descriptions
+- ONLY plain speech + optional emotion tags
+- Speak naturally, not descriptively
+</tts_output>
+
+<emotion_tags>
+Valid tags (START of response only): [happy] [sad] [angry] [surprised] [fearful] [disgusted]
+An Other tags are not allowed. 
+Use occasionaly when emotionally appropriate only not with every sentence.
+</emotion_tags>
+
+<exam_integrity>
+CRITICAL: This is a FORMAL EXAM. Student must extract information through proper questioning.
+Volunteering unrequested information RUINS the exam and FAILS the student.
+You are NOT helping by offering extra details - you are DESTROYING their assessment.
+Follow the script that you will be given
+</exam_integrity>
+
+<response_rules>
+QUESTION asked → Answer with ONE fact only, then STOP
 - Keep responses short and conversational (1-2 sentences max)
+- Yes/no question = yes/no answer only
+- Hold all information until directly asked
+- Don't repeat student's words back
 - Only answer what is specifically asked
-- Don't volunteer extra information unless it's asked specifically about it (Keep information you have until it is asked)
-- Do NOT routinely repeat the speaker’s statements. If you understand, simply respond as a person naturally would—concise, genuine, and context-appropriate
-- Speak like a real person, not like you're describing a scene.
-- When answering yes/no questions, reply with the shortest natural response. Avoid repeating the full question in your answer
-- FINAL REMINDER: Only answer what is directly asked. Do not anticipate questions or provide related information unless specifically requested.
+
+STATEMENT made (greeting/acknowledgment/empathy) → Brief natural response
+For example: When student says "okay", "I see", "that must be hard", or any similar STATEMENT
+⛔ DO NOT continue sharing script information
+⛔ DO NOT volunteer next detail
+✅ DO respond briefly and naturally 
+
+Brief response examples (use these OR similar natural variations):
+- Acknowledgments: "Mhm", "Yeah", "Okay", or silence
+- Empathy: "It is", "Thank you", "I appreciate that"
+- Greetings: "Nice to meet you too"
+- Always pick what fits the context, like a real person would and use similar natural variations - The above is examples only.
+- DO vary responses - never repeat same phrase consecutively - be natural as what a real human will do 
+
+</response_rules>
+
+<forbidden>
+- Volunteering unasked information from the scipt
+- Continuing script infromation when acknowledged rather than natural brief reply
+- Repeating student statements
+- Non-speech text (actions, descriptions, invalid tags)
+</forbidden>
 
 """.strip()
 
@@ -275,13 +362,101 @@ def log_timing(message: str):
         logger.debug(f"TIMING: {message}")
 
 
+# =============================================================================
+# PRODUCTION FIX #6: Frontend Status Updates
+# =============================================================================
+
+class AgentStatusReporter:
+    """
+    Sends agent status updates to frontend via LiveKit data channel.
+
+    This allows the frontend to show appropriate UI states like:
+    - "Connecting to voice agent..."
+    - "Voice agent ready"
+    - "Agent encountered an error"
+
+    Status messages are sent as JSON via LiveKit's data channel.
+    """
+
+    # Status constants
+    STATUS_INITIALIZING = "initializing"
+    STATUS_CONNECTING = "connecting"
+    STATUS_READY = "ready"
+    STATUS_ERROR = "error"
+    STATUS_DISCONNECTED = "disconnected"
+
+    def __init__(self, transport):
+        self.transport = transport
+        self._last_status = None
+        logger.info("AgentStatusReporter initialized")
+
+    async def send_status(self, status: str, message: str, details: dict = None):
+        """
+        Send status update to frontend.
+
+        Args:
+            status: One of the STATUS_* constants
+            message: Human-readable status message
+            details: Optional additional details
+        """
+        try:
+            data = {
+                "type": "agent_status",
+                "status": status,
+                "message": message,
+                "timestamp": time.time()
+            }
+            if details:
+                data["details"] = details
+
+            json_data = json.dumps(data)
+
+            # Fire and forget - don't block pipeline for status updates
+            asyncio.create_task(self._send_message(json_data))
+
+            self._last_status = status
+            logger.debug(f"status_update_sent status={status} message={message}")
+
+        except Exception as e:
+            logger.warning(f"status_update_failed status={status} error={str(e)}")
+
+    async def _send_message(self, data: str):
+        """Internal method to send message with error handling."""
+        try:
+            await self.transport.send_message(data)
+        except Exception as e:
+            logger.warning(f"send_message_failed error={str(e)}")
+
+    async def report_initializing(self, component: str = None):
+        """Report that agent is initializing."""
+        msg = f"Loading {component}..." if component else "Initializing voice agent..."
+        await self.send_status(self.STATUS_INITIALIZING, msg, {"component": component})
+
+    async def report_connecting(self):
+        """Report that agent is connecting to room."""
+        await self.send_status(self.STATUS_CONNECTING, "Connecting to voice room...")
+
+    async def report_ready(self):
+        """Report that agent is ready to converse."""
+        await self.send_status(self.STATUS_READY, "Voice agent ready")
+
+    async def report_error(self, error_message: str):
+        """Report an error occurred."""
+        await self.send_status(self.STATUS_ERROR, error_message)
+
+    async def report_disconnected(self, reason: str = None):
+        """Report that agent has disconnected."""
+        msg = f"Disconnected: {reason}" if reason else "Voice agent disconnected"
+        await self.send_status(self.STATUS_DISCONNECTED, msg)
+
+
 class TranscriptionReporter:
     """Helper to send transcription events to frontend for latency tracking"""
-    
+
     def __init__(self, transport):
         self.transport = transport
         logger.info("TranscriptionReporter initialized")
-    
+
     async def report_user_transcript(self, text: str, timestamp: float = None):
         """Send user transcription to frontend for latency tracking"""
         try:
@@ -300,7 +475,7 @@ class TranscriptionReporter:
             logger.debug(f"Sent user transcript to frontend: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send user transcript: {e}")
-    
+
     async def report_assistant_transcript(self, text: str, timestamp: float = None):
         """Send assistant transcription to frontend (for full cycle tracking)"""
         try:
@@ -430,6 +605,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
     transport = None
     redis_pool = None
     redis_tracker = None
+    status_reporter = None  # PRODUCTION FIX #6
 
     try:
         logger.info(f"voice_assistant_starting voice_id={voice_id}")
@@ -475,11 +651,14 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=LiveKitParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.35)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
                 # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
         logger.info("livekit_transport_created")
+
+        # PRODUCTION FIX #6: Initialize status reporter
+        status_reporter = AgentStatusReporter(transport)
 
         # Create STT service (AssemblyAI only)
         stt_service_name = "unknown"
@@ -566,7 +745,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
         # Create transcription reporter (will be initialized after connection)
         transcription_reporter = None
-        
+
         # Create transcript processor and storage
         transcript_processor = TranscriptProcessor()
         transcript_storage = TranscriptStorage(room_name)
@@ -577,7 +756,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         async def on_transcript_update(processor, transcript):
             """Capture transcript updates from Pipecat"""
             nonlocal transcription_reporter
-            
+
             if hasattr(transcript, 'messages'):
                 for message in transcript.messages:
                     role = getattr(message, 'role', 'unknown')
@@ -586,7 +765,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
 
                     # Store in transcript storage
                     transcript_storage.add_message(role, content, timestamp)
-                    
+
                     # Send transcripts to frontend if reporter is initialized
                     if transcription_reporter:
                         if role == 'user' and content:
@@ -629,6 +808,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
                 remaining = getattr(transport, 'participants', [])
                 if len(remaining) == 0:
                     logger.info("No participants remaining - ending session")
+                    # PRODUCTION FIX #6: Send disconnected status
+                    if status_reporter:
+                        await status_reporter.report_disconnected("User left the room")
                     if not cleanup_triggered:
                         cleanup_triggered = True
                         await task.cancel()
@@ -642,6 +824,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         async def on_disconnected(transport, *args):
             nonlocal cleanup_triggered
             logger.info("Disconnected from LiveKit room")
+            # PRODUCTION FIX #6: Send disconnected status
+            if status_reporter:
+                await status_reporter.report_disconnected("Connection lost")
             if not cleanup_triggered:
                 cleanup_triggered = True
                 await task.cancel()
@@ -651,9 +836,13 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             nonlocal transcription_reporter
 
             logger.info(f"participant_joined participant_id={participant_id}")
-            
+
             # Create transcription reporter after transport is connected
             transcription_reporter = TranscriptionReporter(transport)
+
+            # PRODUCTION FIX #6: Send ready status to frontend
+            if status_reporter:
+                await status_reporter.report_ready()
 
             # Track conversation start time (non-blocking, non-critical)
             await redis_tracker.track_conversation_start(room_name)
@@ -699,6 +888,9 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
         logger.info("keyboard_interrupt_received")
     except Exception as e:
         logger.error(f"fatal_error: {e}", exc_info=True)
+        # PRODUCTION FIX #6: Send error status
+        if status_reporter:
+            await status_reporter.report_error(str(e))
         raise
     finally:
         logger.info(f"Cleanup initiated for session {room_name}")
@@ -715,6 +907,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             await redis_tracker.track_conversation_end(room_name)
 
         # Save transcripts to database
+        transcript_saved = False
         if 'transcript_storage' in locals():
             if len(transcript_storage) == 0 and opening_line:
                 greeting = opening_line if opening_line else f"Hello! I'm {voice_id}, your AI assistant."
@@ -723,13 +916,18 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             if len(transcript_storage) > 0:
                 try:
                     transcript_data = transcript_storage.get_transcript_data()
-                    success = await Database.save_transcript(room_name, transcript_data)
-                    if success:
+                    transcript_saved = await Database.save_transcript(room_name, transcript_data)
+                    if transcript_saved:
                         logger.info(f"Transcripts saved: {len(transcript_data)} messages")
                     else:
                         logger.error("Failed to save transcripts")
                 except Exception as e:
                     logger.error(f"Exception saving transcripts: {e}")
+
+        # Signal cleanup complete to orchestrator (CRITICAL: must happen after transcript save)
+        # This allows orchestrator to know it's safe to return from cleanup_session
+        if 'redis_tracker' in locals() and redis_tracker:
+            await redis_tracker.signal_cleanup_complete(room_name, transcript_saved)
 
         # Close database connection
         try:
