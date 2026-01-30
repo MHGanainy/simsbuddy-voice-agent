@@ -239,7 +239,7 @@ ENABLE_TIMING = os.getenv('LOG_LEVEL', 'INFO').upper() == 'DEBUG'
 PARTICIPANT_GREETING_DELAY = 0.2
 
 # Context Aggregator Settings
-AGGREGATION_TIMEOUT = 0.1
+AGGREGATION_TIMEOUT = 0.15
 BOT_INTERRUPTION_TIMEOUT = 0.1
 
 # TTS Configuration (Inworld)
@@ -261,9 +261,9 @@ STT_SAMPLE_RATE = 16000
 STT_ENCODING = "pcm_s16le"
 STT_MODEL = "universal-streaming"
 STT_FORMAT_TURNS = False
-STT_END_OF_TURN_CONFIDENCE = 0.40
-STT_MIN_SILENCE_CONFIDENT = 200
-STT_MAX_TURN_SILENCE = 450
+STT_END_OF_TURN_CONFIDENCE = 0.4
+STT_MIN_SILENCE_CONFIDENT = 400
+STT_MAX_TURN_SILENCE = 650
 STT_ENABLE_PARTIALS = True
 STT_IMMUTABLE_FINALS = True
 STT_PUNCTUATE = False
@@ -651,7 +651,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             params=LiveKitParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.3)),
                 # turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
             ),
         )
@@ -720,7 +720,7 @@ async def main(voice_id="Ashley", opening_line=None, system_prompt=None):
             api_key=os.getenv("INWORLD_API_KEY"),
             aiohttp_session=session,
             voice_id=voice_id,
-            model="inworld-tts-1",
+            model="inworld-tts-1.5-mini",
             streaming=TTS_STREAMING,
             params=InworldTTSService.InputParams(
                 temperature=TTS_TEMPERATURE,
